@@ -5,7 +5,7 @@ title: mnemos — Agent context
 ## What this repo is
 
 mnemos is shared, cloud-persistent memory for coding agents. The core system is a Go
-REST server backed by TiDB/MySQL, plus three agent integrations, a standalone CLI,
+REST server backed by TiDB/MySQL, plus four agent integrations, a standalone CLI,
 and a small Astro site.
 
 ## Cross-repo relationship: `mem9` and `mem9-node`
@@ -27,10 +27,10 @@ and a small Astro site.
 | `openclaw-plugin/`   | OpenClaw memory plugin (`kind: "memory"`)                    |
 | `opencode-plugin/`   | OpenCode plugin (`@mem9/opencode`)                           |
 | `claude-plugin/`     | Claude Code plugin (hooks + skills)                          |
+| `codex-plugin/`      | Codex plugin (hooks + `$mem9:*` skills)                       |
 | `docs/design/`       | Architecture/proposal notes and design drafts                |
 | `site/`              | Astro static site — deployed to Netlify from `main` branch   |
 | `e2e/`               | Live end-to-end scripts against a running server             |
-| `k8s/`               | Deployment and gateway manifests                             |
 | `benchmark/MR-NIAH/` | Benchmark harness for OpenClaw memory evaluation             |
 
 ## Commands
@@ -45,9 +45,13 @@ make test-integration
 # Single Go test
 cd server && go test -race -count=1 -run TestFunctionName ./internal/service/
 
-# TypeScript verification
+# TypeScript plugin verification
+cd openclaw-plugin && npm test
 cd openclaw-plugin && npm run typecheck
-cd opencode-plugin && npm run typecheck
+cd opencode-plugin && pnpm test
+cd opencode-plugin && pnpm run typecheck
+pnpm --dir codex-plugin test
+pnpm --dir codex-plugin typecheck
 
 # Site dev/build
 cd site && npm run dev
@@ -122,6 +126,7 @@ cd server && MNEMO_DSN="user:pass@tcp(host:4000)/db?parseTime=true" go run ./cmd
 | Dashboard backend (sibling repo) | `../mem9-node/apps/api/`        |
 | Dashboard worker (sibling repo) | `../mem9-node/apps/worker/`      |
 | Claude hooks         | `claude-plugin/hooks/`                      |
+| Codex hooks and skills | `codex-plugin/`                          |
 | Architecture notes   | `docs/design/`                              |
 | OpenCode wiring      | `opencode-plugin/src/index.ts`              |
 | OpenClaw wiring      | `openclaw-plugin/index.ts`                  |
@@ -158,11 +163,17 @@ Use the local file when you work in these areas:
 - `openclaw-plugin/AGENTS.md`
 - `opencode-plugin/AGENTS.md`
 - `claude-plugin/AGENTS.md`
+- `codex-plugin/AGENTS.md`
 - `site/AGENTS.md`
 - `dashboard/app/AGENTS.md`
 - `e2e/AGENTS.md`
-- `k8s/AGENTS.md`
 - `benchmark/MR-NIAH/AGENTS.md`
+
+Validate this map after editing:
+
+```bash
+python3 -c 'from pathlib import Path; import re, subprocess; text = Path("AGENTS.md").read_text(); paths = re.findall(r"`([^`]+/AGENTS\.md)`", text); tracked = set(subprocess.check_output(["git", "ls-files", "*AGENTS.md"], text=True).splitlines()); missing = [p for p in paths if p not in tracked]; print("\n".join(missing)); raise SystemExit(1 if missing else 0)'
+```
 
 ## GitHub access
 
@@ -204,5 +215,5 @@ product or architecture decision that is not clearly implied by the PR.
 ## Explicitly absent
 
 - No `.cursor/rules/`, `.cursorrules`, or `.github/copilot-instructions.md` were found.
-- No TypeScript test runner is configured for the plugin packages.
-- No repo-wide lint config exists for the TypeScript code.
+- No repo-wide TypeScript test runner is configured; plugin tests are package-local.
+- No repo-wide TypeScript lint config exists, and the plugin packages do not expose `lint` scripts.
