@@ -41,7 +41,7 @@ codex plugin marketplace add mem9-ai/mem9
    $mem9:setup
    ```
 
-5. If one repository needs a different profile, timeout, or recall prompt-length threshold, rerun `$mem9:setup` in that repository and apply project scope.
+5. If one repository needs a different profile, timeout, or recall prompt-length threshold, see [Profiles and Project Scope](#profiles-and-project-scope).
 6. When you want an on-demand recall or an explicit store, run:
 
    ```text
@@ -79,6 +79,83 @@ codex
 ```
 
 Use the same `CODEX_HOME` and `MEM9_HOME` in trusted-shell commands that save or update profile keys. `$mem9:setup` keeps API key entry out of the Codex TUI and writes the key to `$MEM9_HOME/.credentials.json`.
+
+## Profiles and Project Scope
+
+Use `$mem9:setup` for profile setup. It creates or selects mem9 profiles, saves profile keys, and applies the selected profile globally or for the current repository.
+
+### Set the default profile
+
+1. Run `$mem9:setup`.
+2. Choose `create-new` to create a mem9 API key, or choose `use-existing` to reuse a saved profile.
+3. Choose `user scope`.
+
+This selects the default profile Codex uses across repositories.
+
+### Use a different profile in one repository
+
+1. Open Codex from that repository.
+2. Run `$mem9:setup`.
+3. Choose `create-new` or `use-existing` for the repository profile.
+4. Choose `project scope`.
+
+Project scope can override:
+
+- `profileId`
+- `defaultTimeoutMs`
+- `searchTimeoutMs`
+- `recallMinPromptLength`
+
+### Return a repository to the default profile
+
+1. Open Codex from that repository.
+2. Run `$mem9:setup`.
+3. Choose `clear project scope`.
+
+The repository will use the user-scope default profile again.
+
+Use the same `CODEX_HOME` and `MEM9_HOME` when starting Codex and when saving profile keys from a trusted shell. With the defaults above, Codex reads integration files from `~/.codex` and mem9 reads shared profiles from `~/.mem9`.
+
+### What setup writes
+
+Manual edits are mainly for recovery or automation. The recommended path is still `$mem9:setup`.
+
+Saved profiles are written to `$MEM9_HOME/.credentials.json`:
+
+The keys under `profiles` are profile IDs. For example, `"profileId": "work"` selects the `profiles.work` entry.
+
+```json
+{
+  "schemaVersion": 1,
+  "profiles": {
+    "default": {
+      "label": "Personal",
+      "baseUrl": "https://api.mem9.ai",
+      "apiKey": "..."
+    },
+    "work": {
+      "label": "Work",
+      "baseUrl": "https://api.mem9.ai",
+      "apiKey": "..."
+    }
+  }
+}
+```
+
+The user-scope default is written to `$CODEX_HOME/mem9/config.json`.
+
+A project override is written to `<project>/.codex/mem9/config.json`. It only needs the fields that differ from the user-scope default:
+
+```json
+{
+  "schemaVersion": 1,
+  "profileId": "work",
+  "searchTimeoutMs": 15000,
+  "recallMinPromptLength": 5
+}
+```
+
+Remote update-check settings stay in user scope. Project scope only controls the active profile and request tuning for that repository.
 
 ## Daily Commands
 
