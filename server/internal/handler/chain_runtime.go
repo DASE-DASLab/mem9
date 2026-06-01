@@ -6,10 +6,12 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"sync"
 
 	"golang.org/x/sync/errgroup"
 
 	"github.com/qiffang/mnemos/server/internal/domain"
+	"github.com/qiffang/mnemos/server/internal/runtimeusage"
 	"github.com/qiffang/mnemos/server/internal/service"
 )
 
@@ -18,6 +20,182 @@ func (s *Server) firstChainNodeAuth(auth *domain.AuthInfo) (*domain.AuthInfo, er
 		return nil, &domain.ValidationError{Message: "Space Chain has no nodes."}
 	}
 	return chainNodeAuth(auth, auth.Chain.Nodes[0]), nil
+}
+
+func chainRoutingTargets(auth *domain.AuthInfo) []service.RoutingTarget {
+	if auth == nil || auth.Chain == nil {
+		return nil
+	}
+	targets := make([]service.RoutingTarget, 0, len(auth.Chain.Nodes))
+	for _, node := range auth.Chain.Nodes {
+		if node.Position == 0 || !node.RoutingPolicyEnabled {
+			continue
+		}
+		externalSpaceID := strings.TrimSpace(node.ExternalSpaceID)
+		prompt := strings.TrimSpace(node.RoutingPolicyPrompt)
+		if externalSpaceID == "" || prompt == "" {
+			continue
+		}
+		targets = append(targets, service.RoutingTarget{
+			ID:   externalSpaceID,
+			Name: strings.TrimSpace(node.DisplayName),
+			Rule: prompt,
+		})
+	}
+	return targets
+}
+
+type routedReconcileResult struct {
+	memoriesChanged int
+	insightIDs      []string
+	warnings        int
+}
+
+func (s *Server) reconcileRoutedChainFacts(ctx context.Context, auth *domain.AuthInfo, req service.IngestRequest, facts []service.ExtractedFact) routedReconcileResult {
+	if auth == nil || auth.Chain == nil || len(facts) == 0 {
+		return routedReconcileResult{}
+	}
+	targetNodes := make(map[string]domain.ChainAuthNode)
+	for _, node := range auth.Chain.Nodes {
+		if node.Position == 0 || !node.RoutingPolicyEnabled || strings.TrimSpace(node.RoutingPolicyPrompt) == "" {
+			continue
+		}
+		externalSpaceID := strings.TrimSpace(node.ExternalSpaceID)
+		if externalSpaceID == "" {
+			continue
+		}
+		targetNodes[externalSpaceID] = node
+	}
+	if len(targetNodes) == 0 {
+		return routedReconcileResult{}
+	}
+	grouped := make(map[string][]service.ExtractedFact)
+	for _, fact := range facts {
+		seenTargets := make(map[string]struct{}, len(fact.RouteTargets))
+		for _, targetID := range fact.RouteTargets {
+			targetID = strings.TrimSpace(targetID)
+			if targetID == "" {
+				continue
+			}
+			if _, seen := seenTargets[targetID]; seen {
+				continue
+			}
+			node, ok := targetNodes[targetID]
+			if !ok || node.Position == 0 {
+				continue
+			}
+			seenTargets[targetID] = struct{}{}
+			routedFact := fact
+			routedFact.RouteTargets = nil
+			grouped[targetID] = append(grouped[targetID], routedFact)
+		}
+	}
+	if len(grouped) == 0 {
+		return routedReconcileResult{}
+	}
+
+	var (
+		mu     sync.Mutex
+		out    routedReconcileResult
+		wg     sync.WaitGroup
+		sem    = make(chan struct{}, 4)
+		logger = s.logger
+	)
+	if logger == nil {
+		logger = slog.Default()
+	}
+	for targetID, factsForTarget := range grouped {
+		targetID := targetID
+		factsForTarget := factsForTarget
+		node := targetNodes[targetID]
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			nodeAuth := chainNodeAuth(auth, node)
+			targetSvc := s.resolveServices(nodeAuth)
+			var lease *runtimeusage.OperationLease
+			if s.runtimeUsageEnabled() {
+				var err error
+				lease, err = s.runtimeUsage.BeforeMemoryCreate(ctx, subjectFromAuth(nodeAuth), 1)
+				if err != nil {
+					logger.WarnContext(ctx, "space chain routed reconcile skipped by runtime usage",
+						"chain_id", auth.Chain.ChainID,
+						"target_space_id", targetID,
+						"facts", len(factsForTarget),
+						"err", err,
+					)
+					mu.Lock()
+					out.warnings++
+					mu.Unlock()
+					return
+				}
+			}
+			result, err := targetSvc.ingest.ReconcilePhase2(ctx, nodeAuth.AgentName, req.AgentID, req.SessionID, factsForTarget)
+			if err != nil {
+				if s.runtimeUsageEnabled() && lease != nil {
+					s.runtimeUsage.AfterMemoryCreateFailure(context.Background(), lease, err)
+				}
+				logger.WarnContext(ctx, "space chain routed reconcile failed",
+					"chain_id", auth.Chain.ChainID,
+					"target_space_id", targetID,
+					"facts", len(factsForTarget),
+					"err", err,
+				)
+				mu.Lock()
+				out.warnings++
+				mu.Unlock()
+				return
+			}
+			if result == nil {
+				result = &service.IngestResult{Status: "complete"}
+			}
+			if result.Status == "failed" {
+				if s.runtimeUsageEnabled() && lease != nil {
+					s.runtimeUsage.AfterMemoryCreateFailure(context.Background(), lease, errors.New("routed reconcile failed"))
+				}
+				logger.WarnContext(ctx, "space chain routed reconcile returned failed",
+					"chain_id", auth.Chain.ChainID,
+					"target_space_id", targetID,
+					"facts", len(factsForTarget),
+					"warnings", result.Warnings,
+				)
+				mu.Lock()
+				out.warnings += max(1, result.Warnings)
+				mu.Unlock()
+				return
+			}
+			if s.runtimeUsageEnabled() && lease != nil {
+				if err := withRuntimeUsagePostSuccessContext(func(ctx context.Context) error {
+					return s.runtimeUsage.AfterMemoryCreateSuccess(ctx, lease, runtimeusage.MemoryCreateResult{
+						MemoryIDs:       result.InsightIDs,
+						AgentName:       nodeAuth.AgentName,
+						ObjectsAffected: int64(result.MemoriesChanged),
+					})
+				}); err != nil {
+					logger.WarnContext(ctx, "space chain routed reconcile runtime usage finalization failed",
+						"chain_id", auth.Chain.ChainID,
+						"target_space_id", targetID,
+						"facts", len(factsForTarget),
+						"err", err,
+					)
+					mu.Lock()
+					out.warnings++
+					mu.Unlock()
+					return
+				}
+			}
+			mu.Lock()
+			out.memoriesChanged += result.MemoriesChanged
+			out.insightIDs = append(out.insightIDs, result.InsightIDs...)
+			out.warnings += result.Warnings
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	return out
 }
 
 func chainNodeAuth(auth *domain.AuthInfo, node domain.ChainAuthNode) *domain.AuthInfo {
