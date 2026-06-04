@@ -12,25 +12,38 @@ import { DEFAULT_LOCALE, siteCopy, siteLocales } from '../content/site';
         hidden={locale !== DEFAULT_LOCALE}
       >
         <div class="container release-notes-shell">
-          <header class="release-notes-header">
-            <p class="section-kicker">{releaseNotes.kicker}</p>
-            <h1>{releaseNotes.title}</h1>
-            <p>{releaseNotes.intro}</p>
-            <div class="release-notes-star">
-              <span>{releaseNotes.starPrompt}</span>
-              <a href={releaseNotes.starHref} target="_blank" rel="noopener">
-                <img
-                  src={releaseNotes.starBadgeSrc}
-                  alt={releaseNotes.starBadgeAlt}
-                  loading="lazy"
-                />
-              </a>
+          <div class="release-notes-hero">
+            <header class="release-notes-header">
+              <p class="section-kicker">{releaseNotes.kicker}</p>
+              <h1>{releaseNotes.title}</h1>
+              <p>{releaseNotes.intro}</p>
+              <div class="release-notes-star">
+                <span>{releaseNotes.starPrompt}</span>
+                <a href={releaseNotes.starHref} target="_blank" rel="noopener">
+                  <img
+                    src={releaseNotes.starBadgeSrc}
+                    alt={releaseNotes.starBadgeAlt}
+                    loading="lazy"
+                  />
+                </a>
+              </div>
+              <div class="release-notes-updated">
+                <span>{releaseNotes.updatedLabel}</span>
+                <strong>{releaseNotes.updatedValue}</strong>
+              </div>
+            </header>
+
+            <div class="release-notes-art">
+              <img
+                src="/release-notes-hero.jpg"
+                alt={releaseNotes.heroImageAlt}
+                loading="eager"
+                decoding="async"
+                width="1122"
+                height="950"
+              />
             </div>
-            <div class="release-notes-updated">
-              <span>{releaseNotes.updatedLabel}</span>
-              <strong>{releaseNotes.updatedValue}</strong>
-            </div>
-          </header>
+          </div>
 
           <div class="release-note-groups">
             {releaseNotes.groups.map((group, groupIndex) => (
@@ -42,7 +55,10 @@ import { DEFAULT_LOCALE, siteCopy, siteLocales } from '../content/site';
                 <div class="release-note-list">
                   {group.items.map((item) => (
                     <article class="release-note-card surface-card">
-                      <div class="release-note-meta">{item.date}</div>
+                      <div class="release-note-meta-row">
+                        <div class="release-note-meta">{item.date}</div>
+                        <div class="release-note-version">{item.version}</div>
+                      </div>
                       <h3>{item.title}</h3>
                       <p class="release-note-summary">{item.summary}</p>
 
@@ -109,6 +125,13 @@ import { DEFAULT_LOCALE, siteCopy, siteLocales } from '../content/site';
     gap: 4rem;
   }
 
+  .release-notes-hero {
+    display: grid;
+    grid-template-columns: minmax(0, 0.95fr) minmax(22rem, 0.72fr);
+    gap: clamp(2rem, 5vw, 4.5rem);
+    align-items: center;
+  }
+
   .release-notes-header {
     max-width: 820px;
     display: grid;
@@ -169,6 +192,21 @@ import { DEFAULT_LOCALE, siteCopy, siteLocales } from '../content/site';
     font-weight: 700;
   }
 
+  .release-notes-art {
+    overflow: hidden;
+    aspect-ratio: 1122 / 950;
+    border-radius: 0.5rem;
+    background: #050505;
+    box-shadow: var(--surface-shadow);
+  }
+
+  .release-notes-art img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
   .release-note-groups {
     display: grid;
     gap: 4rem;
@@ -202,16 +240,31 @@ import { DEFAULT_LOCALE, siteCopy, siteLocales } from '../content/site';
     border-radius: 0.75rem;
   }
 
-  .release-note-meta {
+  .release-note-meta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.55rem;
+    align-items: center;
+  }
+
+  .release-note-meta,
+  .release-note-version {
     width: fit-content;
     padding: 0.28rem 0.48rem;
     border: 1px solid var(--border);
     border-radius: 0.5rem;
-    color: var(--accent);
     background: var(--button-bg);
     font-family: var(--font-mono);
     font-size: 0.76rem;
     line-height: 1;
+  }
+
+  .release-note-meta {
+    color: var(--accent);
+  }
+
+  .release-note-version {
+    color: var(--text-dim);
   }
 
   .release-note-card h3 {
@@ -315,6 +368,15 @@ import { DEFAULT_LOCALE, siteCopy, siteLocales } from '../content/site';
   @media (max-width: 820px) {
     .release-notes {
       padding-top: 5rem;
+    }
+
+    .release-notes-hero {
+      grid-template-columns: 1fr;
+      gap: 2rem;
+    }
+
+    .release-notes-art {
+      max-width: 42rem;
     }
 
     .release-note-period {

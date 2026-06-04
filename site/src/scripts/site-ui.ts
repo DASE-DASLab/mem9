@@ -1,4 +1,3 @@
-import { docsCopy, resolveDocsLocale } from '../content/docs';
 import {
   DEFAULT_LOCALE,
   DEFAULT_THEME_PREFERENCE,
@@ -14,7 +13,8 @@ import {
   type SiteThemePreference,
 } from '../content/site';
 
-type MenuName = 'login' | 'language' | 'theme';
+type MenuName = 'docs' | 'login' | 'language' | 'theme';
+type DocsLocale = 'en' | 'zh' | 'ja' | 'ko' | 'id' | 'th';
 type OnboardingVersion = 'stable' | 'beta';
 type OnboardingCommandParts = {
   prefix: string;
@@ -498,10 +498,28 @@ function isReleaseNotesPage(): boolean {
   return document.querySelector('[data-release-notes-root]') !== null;
 }
 
+function resolveDocsLocale(locale: SiteLocale): DocsLocale {
+  switch (locale) {
+    case 'zh':
+    case 'zh-Hant':
+      return 'zh';
+    case 'ja':
+      return 'ja';
+    case 'ko':
+      return 'ko';
+    case 'id':
+      return 'id';
+    case 'th':
+      return 'th';
+    case 'en':
+    default:
+      return 'en';
+  }
+}
+
 function updateDocsPage(locale: SiteLocale): void {
   const docsLocale = resolveDocsLocale(locale);
   const root = document.querySelector<HTMLElement>('[data-docs-root]');
-  const copy = docsCopy[docsLocale];
 
   if (!root) {
     return;
@@ -509,9 +527,8 @@ function updateDocsPage(locale: SiteLocale): void {
 
   root.dataset.docsLocale = docsLocale;
   setDocumentLang(locale);
-  updateMetaElements(copy.meta.title, copy.meta.description);
 
-  document.querySelectorAll<HTMLElement>('[data-docs-copy]').forEach((sectionCopy) => {
+  root.querySelectorAll<HTMLElement>('[data-docs-copy]').forEach((sectionCopy) => {
     const isActive = sectionCopy.dataset.docsCopy === docsLocale;
     sectionCopy.hidden = !isActive;
 
@@ -529,6 +546,16 @@ function updateDocsPage(locale: SiteLocale): void {
       anchor.removeAttribute('id');
     });
   });
+
+  const activeCopy = root.querySelector<HTMLElement>('[data-docs-copy]:not([hidden])');
+  if (activeCopy) {
+    updateMetaElements(activeCopy.dataset.docsMetaTitle ?? '', activeCopy.dataset.docsMetaDescription ?? '');
+
+    const backToTopButton = root.querySelector<HTMLButtonElement>('[data-docs-back-to-top]');
+    if (backToTopButton && activeCopy.dataset.docsBackToTopLabel) {
+      backToTopButton.setAttribute('aria-label', activeCopy.dataset.docsBackToTopLabel);
+    }
+  }
 }
 
 function updateApiPage(locale: SiteLocale): void {
@@ -1311,6 +1338,7 @@ type ApiTestSavedForm = {
 };
 
 const API_TEST_STORAGE_PREFIX = 'mem9.apiTestForm.';
+const API_TEST_SAVE_INFO_STORAGE_KEY = 'mem9.apiTestSaveInfo';
 let activeApiTestEndpoint: ApiTestEndpoint | null = null;
 
 function apiTestLabels(): SiteDictionary['apiPage']['labels'] {
@@ -1619,6 +1647,22 @@ function apiTestStorageKey(endpoint: ApiTestEndpoint): string {
   return `${API_TEST_STORAGE_PREFIX}${encodeURIComponent(`${endpoint.method}:${endpoint.path}`)}`;
 }
 
+function readApiTestSaveInfoPreference(): boolean {
+  try {
+    return localStorage.getItem(API_TEST_SAVE_INFO_STORAGE_KEY) !== 'false';
+  } catch {
+    return true;
+  }
+}
+
+function writeApiTestSaveInfoPreference(enabled: boolean): void {
+  try {
+    localStorage.setItem(API_TEST_SAVE_INFO_STORAGE_KEY, enabled ? 'true' : 'false');
+  } catch {
+    // Ignore storage quota or privacy-mode failures.
+  }
+}
+
 function isApiTestApiKeyName(name: string): boolean {
   return name.toLowerCase().replace(/[^a-z0-9]/g, '').includes('apikey');
 }
@@ -1744,6 +1788,21 @@ function saveApiTestForm(elements: ApiTestModalElements): void {
 function clearApiTestSavedForm(endpoint: ApiTestEndpoint): void {
   try {
     localStorage.removeItem(apiTestStorageKey(endpoint));
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function clearApiTestSavedForms(): void {
+  try {
+    const keysToRemove: string[] = [];
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (key?.startsWith(API_TEST_STORAGE_PREFIX)) {
+        keysToRemove.push(key);
+      }
+    }
+    keysToRemove.forEach((key) => localStorage.removeItem(key));
   } catch {
     // Ignore storage failures.
   }
@@ -1928,6 +1987,8 @@ function initApiTestConsole(): void {
     return;
   }
 
+  elements.saveInfo.checked = readApiTestSaveInfoPreference();
+
   document.querySelectorAll<HTMLButtonElement>('[data-api-test-open]').forEach((button) => {
     button.addEventListener('click', () => {
       const endpoint = parseApiTestEndpoint(button.dataset.apiTestEndpoint);
@@ -1956,9 +2017,13 @@ function initApiTestConsole(): void {
   });
 
   elements.saveInfo.addEventListener('change', () => {
+    writeApiTestSaveInfoPreference(elements.saveInfo.checked);
     if (elements.saveInfo.checked) {
       saveApiTestForm(elements);
+      return;
     }
+
+    clearApiTestSavedForms();
   });
 
   elements.form.addEventListener('input', () => {
