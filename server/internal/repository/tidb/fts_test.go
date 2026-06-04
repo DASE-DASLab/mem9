@@ -146,7 +146,7 @@ func TestSessionFTSSearch_PagesPureFTSBeforePostFilter(t *testing.T) {
 		},
 		{
 			mustContain: []string{
-				"SELECT id, session_id, agent_id, source, seq, role, content, content_type, tags, state, created_at",
+				"SELECT id, session_id, agent_id, app_id, source, seq, role, content, content_type, tags, state, created_at",
 				"FROM sessions",
 				"WHERE id IN (",
 				"AND state = ? AND agent_id = ? AND session_id = ? AND source = ? AND JSON_CONTAINS(tags, ?)",
@@ -183,7 +183,7 @@ func TestSessionFTSSearch_PagesPureFTSBeforePostFilter(t *testing.T) {
 		},
 		{
 			mustContain: []string{
-				"SELECT id, session_id, agent_id, source, seq, role, content, content_type, tags, state, created_at",
+				"SELECT id, session_id, agent_id, app_id, source, seq, role, content, content_type, tags, state, created_at",
 				"FROM sessions",
 				"WHERE id IN (",
 				"AND state = ? AND agent_id = ? AND session_id = ? AND source = ? AND JSON_CONTAINS(tags, ?)",
@@ -304,7 +304,7 @@ func TestSessionFTSSearch_StopsAfterRequestedLimitPageWhenFull(t *testing.T) {
 		},
 		{
 			mustContain: []string{
-				"SELECT id, session_id, agent_id, source, seq, role, content, content_type, tags, state, created_at",
+				"SELECT id, session_id, agent_id, app_id, source, seq, role, content, content_type, tags, state, created_at",
 				"FROM sessions",
 				"WHERE id IN (",
 				"AND state = ? AND agent_id = ?",
@@ -438,7 +438,7 @@ func TestSessionFTSSearch_StopsAtCandidatePageLimit(t *testing.T) {
 		},
 	}, &queryExpectation{
 		mustContain: []string{
-			"SELECT id, session_id, agent_id, source, seq, role, content, content_type, tags, state, created_at",
+			"SELECT id, session_id, agent_id, app_id, source, seq, role, content, content_type, tags, state, created_at",
 			"FROM sessions",
 			"WHERE id IN (",
 			"AND state = ?",
@@ -472,7 +472,7 @@ func TestSessionFTSSearch_StopsAtCandidatePageLimit(t *testing.T) {
 			},
 		}, &queryExpectation{
 			mustContain: []string{
-				"SELECT id, session_id, agent_id, source, seq, role, content, content_type, tags, state, created_at",
+				"SELECT id, session_id, agent_id, app_id, source, seq, role, content, content_type, tags, state, created_at",
 				"FROM sessions",
 				"WHERE id IN (",
 				"AND state = ?",
@@ -692,7 +692,7 @@ func ftsCandidateArgs(prefix string, count int) []any {
 func memoryColumns() []string {
 	return []string{
 		"id", "content", "source", "tags", "metadata", "embedding", "memory_type", "agent_id",
-		"session_id", "state", "version", "updated_by", "created_at", "updated_at", "superseded_by",
+		"session_id", "app_id", "state", "version", "updated_by", "created_at", "updated_at", "superseded_by",
 	}
 }
 
@@ -707,6 +707,7 @@ func memoryRow(id, content, agentID, sessionID, state string, tags []byte, ts ti
 		string(domain.TypeInsight),
 		agentID,
 		sessionID,
+		"",
 		state,
 		int64(1),
 		"tester",
@@ -718,7 +719,7 @@ func memoryRow(id, content, agentID, sessionID, state string, tags []byte, ts ti
 
 func sessionColumns() []string {
 	return []string{
-		"id", "session_id", "agent_id", "source", "seq", "role", "content", "content_type", "tags", "state", "created_at",
+		"id", "session_id", "agent_id", "app_id", "source", "seq", "role", "content", "content_type", "tags", "state", "created_at",
 	}
 }
 
@@ -727,6 +728,7 @@ func sessionRow(id, sessionID, agentID, source string, seq int64, role, content 
 		id,
 		sessionID,
 		agentID,
+		"",
 		source,
 		seq,
 		role,

@@ -35,7 +35,7 @@ func NewMemoryRepo(db *sql.DB, autoModel string, ftsEnabled bool, clusterID stri
 func (r *MemoryRepo) FTSAvailable() bool { return r.ftsAvailable.Load() }
 
 const (
-	allColumns               = `id, content, source, tags, metadata, embedding, memory_type, agent_id, session_id, state, version, updated_by, created_at, updated_at, superseded_by`
+	allColumns               = `id, content, source, tags, metadata, embedding, memory_type, agent_id, session_id, app_id, state, version, updated_by, created_at, updated_at, superseded_by`
 	maxFTSCandidatePageLimit = 10000
 	maxFTSFallbackPages      = 30
 	// TiDB Cloud FTS is only safe with fts_match_word as the only WHERE predicate,
@@ -51,10 +51,10 @@ func (r *MemoryRepo) Create(ctx context.Context, m *domain.Memory) error {
 	}
 	if r.autoModel != "" {
 		_, err := r.db.ExecContext(ctx,
-			`INSERT INTO memories (id, content, source, tags, metadata, memory_type, agent_id, session_id, state, version, updated_by, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, NOW(), NOW())`,
+			`INSERT INTO memories (id, content, source, tags, metadata, memory_type, agent_id, session_id, app_id, state, version, updated_by, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, NOW(), NOW())`,
 			m.ID, m.Content, nullString(m.Source),
-			tagsJSON, nullJSON(m.Metadata), memoryType, nullString(m.AgentID), nullString(m.SessionID),
+			tagsJSON, nullJSON(m.Metadata), memoryType, nullString(m.AgentID), nullString(m.SessionID), m.AppID,
 			m.Version, nullString(m.UpdatedBy),
 		)
 		if err != nil {
@@ -63,10 +63,10 @@ func (r *MemoryRepo) Create(ctx context.Context, m *domain.Memory) error {
 		return nil
 	}
 	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO memories (id, content, source, tags, metadata, embedding, memory_type, agent_id, session_id, state, version, updated_by, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, NOW(), NOW())`,
+		`INSERT INTO memories (id, content, source, tags, metadata, embedding, memory_type, agent_id, session_id, app_id, state, version, updated_by, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, NOW(), NOW())`,
 		m.ID, m.Content, nullString(m.Source),
-		tagsJSON, nullJSON(m.Metadata), vecToString(m.Embedding), memoryType, nullString(m.AgentID), nullString(m.SessionID),
+		tagsJSON, nullJSON(m.Metadata), vecToString(m.Embedding), memoryType, nullString(m.AgentID), nullString(m.SessionID), m.AppID,
 		m.Version, nullString(m.UpdatedBy),
 	)
 	if err != nil {
@@ -218,18 +218,18 @@ func (r *MemoryRepo) ArchiveAndCreate(ctx context.Context, archiveID, superseded
 
 	if r.autoModel != "" {
 		_, err = tx.ExecContext(ctx,
-			`INSERT INTO memories (id, content, source, tags, metadata, memory_type, agent_id, session_id, state, version, updated_by, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, NOW(), NOW())`,
+			`INSERT INTO memories (id, content, source, tags, metadata, memory_type, agent_id, session_id, app_id, state, version, updated_by, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, NOW(), NOW())`,
 			newMem.ID, newMem.Content, nullString(newMem.Source),
-			tagsJSON, nullJSON(newMem.Metadata), memoryType, nullString(newMem.AgentID), nullString(newMem.SessionID),
+			tagsJSON, nullJSON(newMem.Metadata), memoryType, nullString(newMem.AgentID), nullString(newMem.SessionID), newMem.AppID,
 			newMem.Version, nullString(newMem.UpdatedBy),
 		)
 	} else {
 		_, err = tx.ExecContext(ctx,
-			`INSERT INTO memories (id, content, source, tags, metadata, embedding, memory_type, agent_id, session_id, state, version, updated_by, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, NOW(), NOW())`,
+			`INSERT INTO memories (id, content, source, tags, metadata, embedding, memory_type, agent_id, session_id, app_id, state, version, updated_by, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, NOW(), NOW())`,
 			newMem.ID, newMem.Content, nullString(newMem.Source),
-			tagsJSON, nullJSON(newMem.Metadata), vecToString(newMem.Embedding), memoryType, nullString(newMem.AgentID), nullString(newMem.SessionID),
+			tagsJSON, nullJSON(newMem.Metadata), vecToString(newMem.Embedding), memoryType, nullString(newMem.AgentID), nullString(newMem.SessionID), newMem.AppID,
 			newMem.Version, nullString(newMem.UpdatedBy),
 		)
 	}
@@ -367,11 +367,11 @@ func (r *MemoryRepo) BulkCreate(ctx context.Context, memories []*domain.Memory) 
 
 	var stmtSQL string
 	if r.autoModel != "" {
-		stmtSQL = `INSERT INTO memories (id, content, source, tags, metadata, memory_type, agent_id, session_id, state, version, updated_by, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, NOW(), NOW())`
-	} else {
-		stmtSQL = `INSERT INTO memories (id, content, source, tags, metadata, embedding, memory_type, agent_id, session_id, state, version, updated_by, created_at, updated_at)
+		stmtSQL = `INSERT INTO memories (id, content, source, tags, metadata, memory_type, agent_id, session_id, app_id, state, version, updated_by, created_at, updated_at)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, NOW(), NOW())`
+	} else {
+		stmtSQL = `INSERT INTO memories (id, content, source, tags, metadata, embedding, memory_type, agent_id, session_id, app_id, state, version, updated_by, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, NOW(), NOW())`
 	}
 
 	stmt, err := tx.PrepareContext(ctx, stmtSQL)
@@ -390,13 +390,13 @@ func (r *MemoryRepo) BulkCreate(ctx context.Context, memories []*domain.Memory) 
 		if r.autoModel != "" {
 			_, execErr = stmt.ExecContext(ctx,
 				m.ID, m.Content, nullString(m.Source),
-				tagsJSON, nullJSON(m.Metadata), memoryType, nullString(m.AgentID), nullString(m.SessionID),
+				tagsJSON, nullJSON(m.Metadata), memoryType, nullString(m.AgentID), nullString(m.SessionID), m.AppID,
 				m.Version, nullString(m.UpdatedBy),
 			)
 		} else {
 			_, execErr = stmt.ExecContext(ctx,
 				m.ID, m.Content, nullString(m.Source),
-				tagsJSON, nullJSON(m.Metadata), vecToString(m.Embedding), memoryType, nullString(m.AgentID), nullString(m.SessionID),
+				tagsJSON, nullJSON(m.Metadata), vecToString(m.Embedding), memoryType, nullString(m.AgentID), nullString(m.SessionID), m.AppID,
 				m.Version, nullString(m.UpdatedBy),
 			)
 		}
@@ -757,6 +757,10 @@ func (r *MemoryRepo) buildFilterConds(f domain.MemoryFilter) ([]string, []any) {
 		conds = append(conds, "session_id = ?")
 		args = append(args, f.SessionID)
 	}
+	if f.AppID != nil {
+		conds = append(conds, "app_id = ?")
+		args = append(args, *f.AppID)
+	}
 	if f.Source != "" {
 		conds = append(conds, "source = ?")
 		args = append(args, f.Source)
@@ -778,11 +782,11 @@ func (r *MemoryRepo) buildFilterConds(f domain.MemoryFilter) ([]string, []any) {
 // scanMemory scans a single row into a Memory.
 func scanMemory(row *sql.Row) (*domain.Memory, error) {
 	var m domain.Memory
-	var source, memoryType, agentID, sessionID, state, updatedBy, supersededBy sql.NullString
+	var source, memoryType, agentID, sessionID, appID, state, updatedBy, supersededBy sql.NullString
 	var tagsJSON, metadataJSON, embeddingStr []byte
 
 	err := row.Scan(&m.ID, &m.Content, &source,
-		&tagsJSON, &metadataJSON, &embeddingStr, &memoryType, &agentID, &sessionID, &state, &m.Version, &updatedBy,
+		&tagsJSON, &metadataJSON, &embeddingStr, &memoryType, &agentID, &sessionID, &appID, &state, &m.Version, &updatedBy,
 		&m.CreatedAt, &m.UpdatedAt, &supersededBy)
 	if err == sql.ErrNoRows {
 		return nil, domain.ErrNotFound
@@ -797,6 +801,7 @@ func scanMemory(row *sql.Row) (*domain.Memory, error) {
 	}
 	m.AgentID = agentID.String
 	m.SessionID = sessionID.String
+	m.AppID = appID.String
 	m.State = domain.MemoryState(state.String)
 	if m.State == "" {
 		m.State = domain.StateActive
@@ -811,11 +816,11 @@ func scanMemory(row *sql.Row) (*domain.Memory, error) {
 // scanMemoryRows scans from *sql.Rows (used by List and KeywordSearch).
 func scanMemoryRows(rows *sql.Rows) (*domain.Memory, error) {
 	var m domain.Memory
-	var source, memoryType, agentID, sessionID, state, updatedBy, supersededBy sql.NullString
+	var source, memoryType, agentID, sessionID, appID, state, updatedBy, supersededBy sql.NullString
 	var tagsJSON, metadataJSON, embeddingStr []byte
 
 	err := rows.Scan(&m.ID, &m.Content, &source,
-		&tagsJSON, &metadataJSON, &embeddingStr, &memoryType, &agentID, &sessionID, &state, &m.Version, &updatedBy,
+		&tagsJSON, &metadataJSON, &embeddingStr, &memoryType, &agentID, &sessionID, &appID, &state, &m.Version, &updatedBy,
 		&m.CreatedAt, &m.UpdatedAt, &supersededBy)
 	if err != nil {
 		return nil, fmt.Errorf("scan memory row: %w", err)
@@ -827,6 +832,7 @@ func scanMemoryRows(rows *sql.Rows) (*domain.Memory, error) {
 	}
 	m.AgentID = agentID.String
 	m.SessionID = sessionID.String
+	m.AppID = appID.String
 	m.State = domain.MemoryState(state.String)
 	if m.State == "" {
 		m.State = domain.StateActive
@@ -841,12 +847,12 @@ func scanMemoryRows(rows *sql.Rows) (*domain.Memory, error) {
 // scanMemoryRowsWithDistance scans a row that includes a trailing distance column (used by VectorSearch).
 func scanMemoryRowsWithDistance(rows *sql.Rows) (*domain.Memory, error) {
 	var m domain.Memory
-	var source, memoryType, agentID, sessionID, state, updatedBy, supersededBy sql.NullString
+	var source, memoryType, agentID, sessionID, appID, state, updatedBy, supersededBy sql.NullString
 	var tagsJSON, metadataJSON, embeddingStr []byte
 	var distance float64
 
 	err := rows.Scan(&m.ID, &m.Content, &source,
-		&tagsJSON, &metadataJSON, &embeddingStr, &memoryType, &agentID, &sessionID, &state, &m.Version, &updatedBy,
+		&tagsJSON, &metadataJSON, &embeddingStr, &memoryType, &agentID, &sessionID, &appID, &state, &m.Version, &updatedBy,
 		&m.CreatedAt, &m.UpdatedAt, &supersededBy,
 		&distance)
 	if err != nil {
@@ -859,6 +865,7 @@ func scanMemoryRowsWithDistance(rows *sql.Rows) (*domain.Memory, error) {
 	}
 	m.AgentID = agentID.String
 	m.SessionID = sessionID.String
+	m.AppID = appID.String
 	m.State = domain.MemoryState(state.String)
 	if m.State == "" {
 		m.State = domain.StateActive
@@ -957,21 +964,29 @@ func vecToString(embedding []float32) any {
 	return sb.String()
 }
 
-func (r *MemoryRepo) NearDupSearch(ctx context.Context, queryText string) (string, float64, error) {
+func (r *MemoryRepo) NearDupSearch(ctx context.Context, queryText string, f domain.MemoryFilter) (string, float64, error) {
 	if r.autoModel == "" {
 		return "", 0, nil
 	}
+	f.State = "active"
+	f.MemoryType = "insight,pinned"
+	conds, args := r.buildFilterConds(f)
+	conds = append(conds, "embedding IS NOT NULL")
+	where := strings.Join(conds, " AND ")
+
 	var id string
 	var dist float64
+	fullArgs := make([]any, 0, len(args)+2)
+	fullArgs = append(fullArgs, queryText)
+	fullArgs = append(fullArgs, args...)
+	fullArgs = append(fullArgs, queryText)
 	err := r.db.QueryRowContext(ctx,
 		`SELECT id, VEC_EMBED_COSINE_DISTANCE(embedding, ?) AS dist
 		 FROM memories
-		 WHERE state = 'active'
-		   AND memory_type IN ('insight', 'pinned')
-		   AND embedding IS NOT NULL
+		 WHERE `+where+`
 		 ORDER BY VEC_EMBED_COSINE_DISTANCE(embedding, ?)
 		 LIMIT 1`,
-		queryText, queryText,
+		fullArgs...,
 	).Scan(&id, &dist)
 	if err == sql.ErrNoRows {
 		return "", 0, nil
