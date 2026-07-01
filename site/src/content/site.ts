@@ -214,6 +214,7 @@ export interface SiteBillingPageCopy {
   kicker: string;
   title: string;
   description: string;
+  docsLinkLabel?: string;
   featureLabels: string[];
   tiers: SiteBillingTier[];
   contactMessage: string;
@@ -6328,6 +6329,7 @@ export const siteCopy: Record<SiteLocale, SiteDictionary> = {
       kicker: 'Pricing',
       title: 'Simple, transparent pricing',
       description: 'Start free. Scale when you need to.',
+      docsLinkLabel: 'Read pricing details in Console Docs',
       featureLabels: [
         'End users',
         'Add requests',
@@ -6675,6 +6677,7 @@ export const siteCopy: Record<SiteLocale, SiteDictionary> = {
       kicker: '定价',
       title: '简单透明的定价',
       description: '免费起步，按需扩展。',
+      docsLinkLabel: '在 Console 文档中阅读定价详情',
       featureLabels: [
         '终端用户',
         '添加请求',
@@ -7026,6 +7029,7 @@ export const siteCopy: Record<SiteLocale, SiteDictionary> = {
       kicker: '定價',
       title: '簡單透明的定價',
       description: '免費起步，按需擴展。',
+      docsLinkLabel: '在 Console 文檔中閱讀定價詳情',
       featureLabels: [
         '終端使用者',
         '新增請求',
@@ -7380,6 +7384,7 @@ export const siteCopy: Record<SiteLocale, SiteDictionary> = {
       kicker: '料金',
       title: 'シンプルで透明な料金体系',
       description: '無料で始めて、必要に応じてスケール。',
+      docsLinkLabel: 'Console ドキュメントで料金の詳細を読む',
       featureLabels: [
         'エンドユーザー',
         '追加リクエスト',
@@ -7733,6 +7738,7 @@ export const siteCopy: Record<SiteLocale, SiteDictionary> = {
       kicker: '요금',
       title: '간단하고 투명한 요금제',
       description: '무료로 시작하고, 필요할 때 확장하세요.',
+      docsLinkLabel: 'Console 문서에서 요금 상세 보기',
       featureLabels: [
         '최종 사용자',
         '추가 요청',
@@ -8089,6 +8095,7 @@ export const siteCopy: Record<SiteLocale, SiteDictionary> = {
       kicker: 'Harga',
       title: 'Harga yang sederhana dan transparan',
       description: 'Mulai gratis. Skalakan saat dibutuhkan.',
+      docsLinkLabel: 'Baca detail harga di dokumentasi Console',
       featureLabels: [
         'Pengguna akhir',
         'Permintaan add',
@@ -8445,6 +8452,7 @@ export const siteCopy: Record<SiteLocale, SiteDictionary> = {
       kicker: 'ราคา',
       title: 'ราคาที่เรียบง่ายและโปร่งใส',
       description: 'เริ่มต้นฟรี ขยายเมื่อคุณต้องการ',
+      docsLinkLabel: 'อ่านรายละเอียดราคาในเอกสาร Console',
       featureLabels: [
         'ผู้ใช้ปลายทาง',
         'Add requests',
