@@ -138,6 +138,7 @@ type QuotaClient interface {
 type QuotaDeniedError struct {
 	StatusCode int
 	Body       []byte
+	RetryAfter string
 }
 
 func (e *QuotaDeniedError) Error() string {
@@ -147,13 +148,28 @@ func (e *QuotaDeniedError) Error() string {
 func (e *QuotaDeniedError) ResponseBody() []byte {
 	if len(e.Body) == 0 {
 		body, _ := json.Marshal(map[string]any{
-			"code":      "runtime_quota_denied",
-			"message":   "runtime usage quota denied",
-			"retryable": false,
+			"error": defaultQuotaDeniedMessage(e.Status()),
+			"details": map[string]any{
+				"errorCategory": "runtime_quota_denied",
+			},
 		})
 		return body
 	}
 	return append([]byte(nil), e.Body...)
+}
+
+func (e *QuotaDeniedError) Status() int {
+	if e != nil && e.StatusCode == http.StatusTooManyRequests {
+		return http.StatusTooManyRequests
+	}
+	return http.StatusPaymentRequired
+}
+
+func defaultQuotaDeniedMessage(status int) string {
+	if status == http.StatusTooManyRequests {
+		return "Post-quota rate limit exceeded."
+	}
+	return "Runtime access is blocked."
 }
 
 type UnavailableError struct {
@@ -183,7 +199,7 @@ func (e *ConflictError) Error() string {
 func HTTPStatus(err error) int {
 	var denied *QuotaDeniedError
 	if errors.As(err, &denied) {
-		return http.StatusPaymentRequired
+		return denied.Status()
 	}
 	var conflict *ConflictError
 	if errors.As(err, &conflict) {
