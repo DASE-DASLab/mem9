@@ -5,6 +5,7 @@ import type { Hooks } from "@opencode-ai/plugin";
 import type { MemoryBackend } from "../src/server/backend.js";
 import type { IngestInput, IngestResult } from "../src/server/backend.js";
 import { buildHooks } from "../src/server/hooks.js";
+import { formatRuntimeQuotaNotice, Mem9HttpError } from "../src/server/quota-error.js";
 import { formatRecallBlock } from "../src/server/recall/format.js";
 import {
   buildRecallQuery,
@@ -36,6 +37,20 @@ function createMemory(overrides: Partial<Memory> = {}): Memory {
     created_at: "2026-04-21T00:00:00.000Z",
     updated_at: "2026-04-21T00:00:00.000Z",
     ...overrides,
+  };
+}
+
+function runtimeQuotaPayload(error: string, runtimeQuota: Record<string, unknown> | null = {}): Record<string, unknown> {
+  const details: Record<string, unknown> = {
+    errorCategory: "runtime_quota_denied",
+  };
+  if (runtimeQuota !== null) {
+    details.runtimeQuota = runtimeQuota;
+  }
+
+  return {
+    error,
+    details,
   };
 }
 
@@ -531,4 +546,278 @@ test("buildHooks degrades gracefully when recall search fails", async () => {
     ["recall.capture", "recall.request", "recall.error"],
   );
   assert.equal(debugEvents[2]?.payload.error, "search backend unavailable");
+});
+
+test("buildHooks renders runtime quota denial action in recall context", async () => {
+  const debugEvents: Array<{ event: string; payload: Record<string, unknown> }> = [];
+  const hooks = buildHooks(
+    createBackend(async () => {
+      throw new Mem9HttpError(
+        "Included quota is exhausted.",
+        402,
+        "",
+        runtimeQuotaPayload("Included quota is exhausted.", {
+          meter: "memory_recall_requests",
+          recommendedAction: {
+            providerActionCode: "claimApiKey",
+            type: "openUrl",
+            url: "https://console.mem9.ai/console/claim?key=mem9_test",
+          },
+        }),
+      );
+    }),
+    {
+      debugLogger: async (event, payload = {}) => {
+        debugEvents.push({ event, payload });
+      },
+    },
+  );
+
+  const onChatMessage = hooks["chat.message"];
+  const onSystemTransform = hooks["experimental.chat.system.transform"];
+  assert.ok(onChatMessage);
+  assert.ok(onSystemTransform);
+
+  await onChatMessage(
+    createChatMessageInput("session-quota"),
+    createChatMessageOutput([textPart("Find relevant project context.")]),
+  );
+
+  const output = createSystemTransformOutput(["Existing system"]);
+  await onSystemTransform(createSystemTransformInput("session-quota"), output);
+
+  assert.equal(output.system.length, 2);
+  assert.match(output.system[1] ?? "", /Mem9 recall is temporarily unavailable/);
+  assert.match(output.system[1] ?? "", /included usage quota for this API key has been used up/);
+  assert.match(output.system[1] ?? "", /sign in or create a mem9 account and claim this API key/);
+  assert.match(output.system[1] ?? "", /upgrade their plan or set up billing/);
+  assert.match(output.system[1] ?? "", /Include the link exactly as written/);
+  assert.match(output.system[1] ?? "", /console\/claim\?key=mem9_test/);
+  assert.equal(
+    output.system[1]?.match(/https:\/\/console\.mem9\.ai\/console\/claim\?key=mem9_test/g)?.length,
+    1,
+  );
+  assert.doesNotMatch(output.system[1] ?? "", /\.\. Claim/);
+  assert.deepEqual(
+    debugEvents.map((entry) => entry.event),
+    ["recall.capture", "recall.request", "recall.quota_denied"],
+  );
+});
+
+test("formatRuntimeQuotaNotice renders spending limit guidance", () => {
+  const notice = formatRuntimeQuotaNotice(
+    new Mem9HttpError(
+      "On-demand spending limit would be exceeded.",
+      402,
+      "",
+      runtimeQuotaPayload("On-demand spending limit would be exceeded.", {
+        meter: "memory_recall_requests",
+        recommendedAction: {
+          providerActionCode: "increaseSpendingLimit",
+          type: "openUrl",
+          url: "https://console.mem9.ai/console/billing/plan",
+        },
+      }),
+    ),
+    "recall paused",
+  );
+
+  assert.match(notice, /configured spending limit would be exceeded/);
+  assert.match(notice, /increase the mem9 spending limit or adjust billing settings/);
+  assert.match(notice, /Include the link exactly as written/);
+  assert.equal(
+    notice.match(/https:\/\/console\.mem9\.ai\/console\/billing\/plan/g)?.length,
+    1,
+  );
+});
+
+test("formatRuntimeQuotaNotice handles missing runtime quota metadata", () => {
+  const notice = formatRuntimeQuotaNotice(
+    new Mem9HttpError(
+      "Runtime access is blocked.",
+      402,
+      "",
+      runtimeQuotaPayload("Runtime access is blocked.", null),
+    ),
+    "recall paused",
+  );
+
+  assert.match(notice, /runtime quota check blocked this request/);
+  assert.match(notice, /open the mem9 console/);
+});
+
+test("formatRuntimeQuotaNotice handles unknown provider action codes", () => {
+  const notice = formatRuntimeQuotaNotice(
+    new Mem9HttpError(
+      "Custom quota action required.",
+      402,
+      "",
+      runtimeQuotaPayload("Custom quota action required.", {
+        recommendedAction: {
+          providerActionCode: "contactSupport",
+          type: "openUrl",
+          url: "https://console.mem9.ai/console/support",
+        },
+      }),
+    ),
+    "recall paused",
+  );
+
+  assert.match(notice, /open this mem9 link to resolve the account or billing state/);
+  assert.match(notice, /console\/support/);
+});
+
+test("formatRuntimeQuotaNotice ignores generic api rate limits", () => {
+  const notice = formatRuntimeQuotaNotice(
+    new Mem9HttpError(
+      "rate limit exceeded",
+      429,
+      "",
+      {
+        error: "rate limit exceeded",
+      },
+    ),
+    "recall paused",
+  );
+
+  assert.equal(notice, "");
+});
+
+test("formatRuntimeQuotaNotice renders post-quota rate limit guidance without action URL", () => {
+  const notice = formatRuntimeQuotaNotice(
+    new Mem9HttpError(
+      "Post-quota rate limit exceeded.",
+      429,
+      "",
+      runtimeQuotaPayload("Post-quota rate limit exceeded.", {
+        meter: "memory_recall_requests",
+        quotaGateResult: {
+          outcome: "rateLimited",
+          mode: "postQuota",
+          reason: "postQuotaRateLimitExceeded",
+          postQuotaRateLimit: {
+            requestsPerMinute: 4,
+            windowDurationSeconds: 60,
+            scope: "apiKeyMeter",
+            retryAfterSeconds: 23,
+          },
+        },
+      }),
+    ),
+    "recall paused",
+  );
+
+  assert.match(notice, /temporary request limit/);
+  assert.match(notice, /quota\/rate-limit check blocked this request/);
+  assert.match(notice, /retry later or open the mem9 console/);
+  assert.doesNotMatch(notice, /console\/billing\/plan/);
+  assert.doesNotMatch(notice, /wait 23 seconds before trying again/);
+  assert.equal((notice.match(/https:\/\//g) ?? []).length, 0);
+});
+
+test("formatRuntimeQuotaNotice renders post-quota billing action when provided", () => {
+  const notice = formatRuntimeQuotaNotice(
+    new Mem9HttpError(
+      "Post-quota rate limit exceeded.",
+      429,
+      "",
+      runtimeQuotaPayload("Post-quota rate limit exceeded.", {
+        meter: "memory_write_requests",
+        recommendedAction: {
+          providerActionCode: "upgradePlan",
+          type: "openUrl",
+          url: "https://console.mem9.ai/console/billing/plan",
+        },
+        quotaGateResult: {
+          outcome: "rateLimited",
+          mode: "postQuota",
+          reason: "postQuotaRateLimitExceeded",
+          postQuotaRateLimit: {
+            requestsPerMinute: 2,
+            windowDurationSeconds: 60,
+            scope: "apiKeyMeter",
+            retryAfterSeconds: 1,
+          },
+        },
+      }),
+    ),
+    "memory save paused",
+  );
+
+  assert.match(notice, /Mem9 memory saving is temporarily unavailable/);
+  assert.match(notice, /upgrade their mem9 plan and get more included usage/);
+  assert.match(notice, /console\/billing\/plan/);
+  assert.doesNotMatch(notice, /wait 1 second before trying again/);
+  assert.equal(
+    notice.match(/https:\/\/console\.mem9\.ai\/console\/billing\/plan/g)?.length,
+    1,
+  );
+});
+
+test("formatRuntimeQuotaNotice renders post-quota claim action when provided", () => {
+  const notice = formatRuntimeQuotaNotice(
+    new Mem9HttpError(
+      "Post-quota rate limit exceeded.",
+      429,
+      "",
+      runtimeQuotaPayload("Post-quota rate limit exceeded.", {
+        meter: "memory_recall_requests",
+        recommendedAction: {
+          providerActionCode: "claimApiKey",
+          type: "openUrl",
+          url: "https://console.mem9.ai/console/claim?key=mem9_test",
+        },
+        quotaGateResult: {
+          outcome: "rateLimited",
+          mode: "postQuota",
+          reason: "postQuotaRateLimitExceeded",
+          postQuotaRateLimit: {
+            requestsPerMinute: 4,
+            windowDurationSeconds: 60,
+            scope: "apiKeyMeter",
+            retryAfterSeconds: 23,
+          },
+        },
+      }),
+    ),
+    "recall paused",
+  );
+
+  assert.match(notice, /temporary request limit/);
+  assert.match(notice, /sign in or create a mem9 account and claim this API key/);
+  assert.match(notice, /After claiming the key, they can upgrade their plan or set up billing/);
+  assert.match(notice, /console\/claim\?key=mem9_test/);
+  assert.doesNotMatch(notice, /console\/billing\/plan/);
+  assert.equal(
+    notice.match(/https:\/\/console\.mem9\.ai\/console\/claim\?key=mem9_test/g)?.length,
+    1,
+  );
+});
+
+test("formatRuntimeQuotaNotice renders write meter guidance", () => {
+  const notice = formatRuntimeQuotaNotice(
+    new Mem9HttpError(
+      "Included quota is exhausted.",
+      402,
+      "",
+      runtimeQuotaPayload("Included quota is exhausted.", {
+        meter: "memory_write_requests",
+        recommendedAction: {
+          providerActionCode: "upgradePlan",
+          type: "openUrl",
+          url: "https://console.mem9.ai/console/billing/plan",
+        },
+      }),
+    ),
+    "recall paused",
+  );
+
+  assert.match(notice, /Mem9 memory saving is temporarily unavailable/);
+  assert.match(notice, /mem9 cannot save new memories right now/);
+  assert.match(notice, /upgrade their mem9 plan and get more included usage/);
+  assert.doesNotMatch(notice, /cannot recall memories/);
+  assert.equal(
+    notice.match(/https:\/\/console\.mem9\.ai\/console\/billing\/plan/g)?.length,
+    1,
+  );
 });

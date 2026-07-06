@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { ServerBackend } from "../src/server/server-backend.js";
+import { Mem9HttpError, parseRuntimeQuotaDenied } from "../src/server/quota-error.js";
 
 async function withPatchedAbortSignalTimeout(
   run: (capturedTimeouts: number[]) => Promise<void>,
@@ -78,6 +79,109 @@ test("ServerBackend uses searchTimeoutMs for search and defaultTimeoutMs for wri
 
       assert.deepEqual(capturedTimeouts, [16000, 11000]);
     });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("ServerBackend rejects malformed success JSON", async () => {
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async () => {
+    return new Response("{", {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+
+  try {
+    const backend = new ServerBackend("https://api.mem9.ai", "mk_demo", "opencode");
+    await assert.rejects(() => backend.search({ q: "hello" }), SyntaxError);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("ServerBackend preserves runtime quota denial response bodies", async () => {
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async () => {
+    return new Response(JSON.stringify({
+      error: "Included quota is exhausted.",
+      details: {
+        errorCategory: "runtime_quota_denied",
+        runtimeQuota: {
+          recommendedAction: {
+            providerActionCode: "claimApiKey",
+            type: "openUrl",
+            url: "https://console.mem9.ai/console/claim?key=mem9_test",
+          },
+        },
+      },
+    }), {
+      status: 402,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+
+  try {
+    const backend = new ServerBackend("https://api.mem9.ai", "mk_demo", "opencode");
+    await assert.rejects(
+      () => backend.search({ q: "hello" }),
+      (error: unknown) => {
+        assert.equal(error instanceof Mem9HttpError, true);
+        const denied = parseRuntimeQuotaDenied(error);
+        assert.equal(denied?.code, "runtime_quota_denied");
+        assert.equal(denied?.recommendedAction?.url, "https://console.mem9.ai/console/claim?key=mem9_test");
+        return true;
+      },
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("ServerBackend preserves post-quota rate limit response bodies", async () => {
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async () => {
+    return new Response(JSON.stringify({
+      error: "Post-quota rate limit exceeded.",
+      details: {
+        errorCategory: "runtime_quota_denied",
+        runtimeQuota: {
+          meter: "memory_recall_requests",
+          quotaGateResult: {
+            outcome: "rateLimited",
+            mode: "postQuota",
+            reason: "postQuotaRateLimitExceeded",
+            postQuotaRateLimit: {
+              requestsPerMinute: 4,
+              windowDurationSeconds: 60,
+              scope: "apiKeyMeter",
+              retryAfterSeconds: 23,
+            },
+          },
+        },
+      },
+    }), {
+      status: 429,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+
+  try {
+    const backend = new ServerBackend("https://api.mem9.ai", "mk_demo", "opencode");
+    await assert.rejects(
+      () => backend.search({ q: "hello" }),
+      (error: unknown) => {
+        assert.equal(error instanceof Mem9HttpError, true);
+        const denied = parseRuntimeQuotaDenied(error);
+        assert.equal(denied?.code, "runtime_quota_denied");
+        assert.equal(denied?.retryAfterSeconds, 23);
+        return true;
+      },
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }

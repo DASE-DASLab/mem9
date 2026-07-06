@@ -4,8 +4,23 @@ import path from "node:path";
 import test from "node:test";
 
 import { buildRuntimeIssueMessage } from "../lib/skill-runtime.mjs";
+import { Mem9HttpError } from "../lib/http.mjs";
 import { main, runStore } from "../skills/store/scripts/store.mjs";
 import { createTempRoot } from "./test-temp.mjs";
+
+/**
+ * @param {string} error
+ * @param {Record<string, unknown>} [runtimeQuota]
+ */
+function runtimeQuotaPayload(error, runtimeQuota = {}) {
+  return {
+    error,
+    details: {
+      errorCategory: "runtime_quota_denied",
+      runtimeQuota,
+    },
+  };
+}
 
 test("main prints store help without calling mem9", async () => {
   let stdoutText = "";
@@ -116,6 +131,56 @@ test("runStore accepts the content from stdin text", async () => {
   );
 
   assert.equal(result.contentChars, "Remember that release notes should stay short.".length);
+});
+
+test("runStore returns a structured runtime quota denial summary", async () => {
+  let stdoutText = "";
+
+  const result = await runStore(
+    ["--content", "The user prefers concise release notes."],
+    {
+      state: {
+        configSource: "global",
+        runtime: {
+          profileId: "default",
+          baseUrl: "https://api.mem9.ai",
+          apiKey: "key-save",
+          agentId: "codex",
+          defaultTimeoutMs: 8000,
+        },
+      },
+      fetchJson: async () => {
+        throw new Mem9HttpError("quota denied", {
+          status: 402,
+          data: runtimeQuotaPayload("Spending limit is exhausted.", {
+            recommendedAction: {
+              providerActionCode: "increaseSpendingLimit",
+              type: "openUrl",
+              url: "https://console.mem9.ai/console/billing/plan",
+            },
+          }),
+        });
+      },
+      stdout: {
+        write(/** @type {string} */ chunk) {
+          stdoutText += chunk;
+        },
+      },
+    },
+  );
+  const quotaResult = /** @type {any} */ (result);
+
+  assert.equal(quotaResult.status, "quota_denied");
+  assert.equal(quotaResult.code, "runtime_quota_denied");
+  assert.equal(quotaResult.contentChars, "The user prefers concise release notes.".length);
+  assert.deepEqual(quotaResult.recommendedAction, {
+    providerActionCode: "increaseSpendingLimit",
+    type: "openUrl",
+    url: "https://console.mem9.ai/console/billing/plan",
+  });
+  assert.deepEqual(JSON.parse(stdoutText), quotaResult);
+  assert.equal(stdoutText.includes("key-save"), false);
+  assert.equal(stdoutText.includes("The user prefers concise release notes."), false);
 });
 
 test("runStore keeps a configured base path", async () => {
