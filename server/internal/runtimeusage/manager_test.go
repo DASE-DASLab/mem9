@@ -2,6 +2,7 @@ package runtimeusage
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/qiffang/mnemos/server/internal/metering"
@@ -11,9 +12,23 @@ type fakeQuotaClient struct {
 	reserveOps       []Operation
 	finalized        []string
 	finalizeSubjects []Subject
+	state            RuntimeState
+	stateSubjects    []Subject
 	err              error
+	stateErr         error
 	reserveErr       error
 	finalizeErr      error
+}
+
+func (c *fakeQuotaClient) RuntimeState(_ context.Context, subject Subject) (RuntimeState, error) {
+	c.stateSubjects = append(c.stateSubjects, subject)
+	if c.stateErr != nil {
+		return RuntimeState{}, c.stateErr
+	}
+	if c.err != nil {
+		return RuntimeState{}, c.err
+	}
+	return c.state, nil
 }
 
 func (c *fakeQuotaClient) Reserve(_ context.Context, _ Subject, operationID string, op Operation) (*Reservation, error) {
@@ -85,6 +100,82 @@ func (s *fakeOutboxStore) MarkOperationRetryableFailure(_ context.Context, _ str
 func (s *fakeOutboxStore) MarkUnknownAfterCrash(context.Context, string, string) error {
 	s.unknown++
 	return nil
+}
+
+func TestNoopManagerRuntimeStateReturnsDisabledFallback(t *testing.T) {
+	quota := &fakeQuotaClient{}
+	manager := NewManager(Config{Enabled: false}, quota, nil, nil)
+
+	state, err := manager.RuntimeState(context.Background(), Subject{APIKeySubject: "mem9_test"})
+	if err != nil {
+		t.Fatalf("RuntimeState: %v", err)
+	}
+	assertFallbackMeter(t, state, MeterMemoryRecallRequests, RuntimeBudgetTypeNotMetered, RuntimeBudgetStateUnlimited)
+	assertFallbackMeter(t, state, MeterMemoryWriteRequests, RuntimeBudgetTypeNotMetered, RuntimeBudgetStateUnlimited)
+
+	lease, err := manager.BeforeRecall(context.Background(), Subject{APIKeySubject: "mem9_test"})
+	if err != nil {
+		t.Fatalf("BeforeRecall: %v", err)
+	}
+	if lease != nil {
+		t.Fatalf("BeforeRecall lease = %+v, want nil", lease)
+	}
+	if len(quota.stateSubjects) != 0 || len(quota.reserveOps) != 0 || len(quota.finalized) != 0 {
+		t.Fatalf("disabled manager called provider: %+v", quota)
+	}
+}
+
+func TestManagerRuntimeStateUsesProvider(t *testing.T) {
+	quota := &fakeQuotaClient{state: RuntimeState{
+		Mem9APIKey:   RuntimeStateAPIKey{Status: RuntimeAPIKeyStatusUnknown},
+		ProviderData: json.RawMessage(`{"bindingState":"claimed"}`),
+		Meters: []RuntimeStateMeter{{
+			Meter: MeterMemoryRecallRequests,
+			Budgets: []RuntimeStatusBudget{{
+				Type:  RuntimeBudgetTypeNotMetered,
+				State: RuntimeBudgetStateUnlimited,
+				Measure: RuntimeStatusMeasure{
+					Kind:     RuntimeMeasureKindCount,
+					Quantity: "request",
+					Scale:    1,
+				},
+				Period:   RuntimeStatusPeriod{Type: RuntimePeriodTypeNone},
+				Capacity: RuntimeStatusCapacity{Type: RuntimeCapacityTypeUnlimited},
+			}},
+		}},
+	}}
+	manager := NewManager(Config{Enabled: true, ProviderID: "mem9-official"}, quota, nil, nil)
+	subject := Subject{TenantID: "tenant-a", ClusterID: "cluster-a", APIKeySubject: "mem9_test", APIKeyStatus: RuntimeAPIKeyStatusActive}
+
+	state, err := manager.RuntimeState(context.Background(), subject)
+	if err != nil {
+		t.Fatalf("RuntimeState: %v", err)
+	}
+	if len(quota.stateSubjects) != 1 || quota.stateSubjects[0] != subject {
+		t.Fatalf("state subjects = %+v, want [%+v]", quota.stateSubjects, subject)
+	}
+	if state.Mem9APIKey.Status != RuntimeAPIKeyStatusActive {
+		t.Fatalf("status = %q, want local active status", state.Mem9APIKey.Status)
+	}
+	if state.ProviderID != "mem9-official" {
+		t.Fatalf("ProviderID = %q, want mem9-official", state.ProviderID)
+	}
+	assertFallbackMeter(t, state, MeterMemoryRecallRequests, RuntimeBudgetTypeNotMetered, RuntimeBudgetStateUnlimited)
+}
+
+func TestManagerRuntimeStateFallsBackWhenProviderUnavailable(t *testing.T) {
+	quota := &fakeQuotaClient{stateErr: &UnavailableError{Err: errString("timeout")}}
+	manager := NewManager(Config{Enabled: true}, quota, nil, nil)
+
+	state, err := manager.RuntimeState(context.Background(), Subject{TenantID: "tenant-a", APIKeySubject: "mem9_test", APIKeyStatus: RuntimeAPIKeyStatusInactive})
+	if err != nil {
+		t.Fatalf("RuntimeState: %v", err)
+	}
+	if state.Mem9APIKey.Status != RuntimeAPIKeyStatusInactive {
+		t.Fatalf("status = %q, want inactive", state.Mem9APIKey.Status)
+	}
+	assertFallbackMeter(t, state, MeterMemoryRecallRequests, RuntimeBudgetTypeProviderManaged, RuntimeBudgetStateProviderManaged)
+	assertFallbackMeter(t, state, MeterMemoryWriteRequests, RuntimeBudgetTypeProviderManaged, RuntimeBudgetStateProviderManaged)
 }
 
 func TestManagerRecallCommitsBeforeMetering(t *testing.T) {
@@ -445,4 +536,22 @@ func TestManagerReleaseUsesConsoleSpecReason(t *testing.T) {
 	if len(outbox.retryReasons) != 1 || outbox.retryReasons[0] != "recallFailed: context deadline exceeded" {
 		t.Fatalf("retry reasons = %+v, want local failure detail", outbox.retryReasons)
 	}
+}
+
+func assertFallbackMeter(t *testing.T, state RuntimeState, meter string, budgetType string, budgetState string) {
+	t.Helper()
+	for _, item := range state.Meters {
+		if item.Meter != meter {
+			continue
+		}
+		if len(item.Budgets) != 1 {
+			t.Fatalf("%s budgets = %+v, want one", meter, item.Budgets)
+		}
+		got := item.Budgets[0]
+		if got.Type != budgetType || got.State != budgetState {
+			t.Fatalf("%s budget = %+v, want type=%s state=%s", meter, got, budgetType, budgetState)
+		}
+		return
+	}
+	t.Fatalf("meter %s missing from %+v", meter, state.Meters)
 }
