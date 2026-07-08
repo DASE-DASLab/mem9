@@ -94,6 +94,9 @@ function createBackend(options: {
         memories_changed: input.messages.length,
       };
     },
+    async runtimeState(): Promise<unknown> {
+      return null;
+    },
   };
 }
 
@@ -151,6 +154,10 @@ test("selectMessagesForIngest strips injected memory blocks and keeps the latest
 <relevant-memories>
 1. Stale memory
 </relevant-memories>
+
+<mem9-status-warning>
+Mem9 API key is inactive.
+</mem9-status-warning>
 
 Keep this request.
 `,

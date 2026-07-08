@@ -23,6 +23,8 @@ import type {
 type ChatMessageHook = NonNullable<Hooks["chat.message"]>;
 type ChatMessageInput = Parameters<ChatMessageHook>[0];
 type ChatMessageOutput = Parameters<ChatMessageHook>[1];
+type MessagesTransformHook = NonNullable<Hooks["experimental.chat.messages.transform"]>;
+type MessagesTransformOutput = Parameters<MessagesTransformHook>[1];
 type SystemTransformHook = NonNullable<Hooks["experimental.chat.system.transform"]>;
 type SystemTransformInput = Parameters<SystemTransformHook>[0];
 type SystemTransformOutput = Parameters<SystemTransformHook>[1];
@@ -56,6 +58,7 @@ function runtimeQuotaPayload(error: string, runtimeQuota: Record<string, unknown
 
 function createBackend(
   searchImpl?: (input: SearchInput) => Promise<SearchResult>,
+  runtimeStateImpl?: () => Promise<unknown>,
 ): MemoryBackend {
   return {
     async store(_input: CreateMemoryInput): Promise<StoreResult> {
@@ -87,6 +90,9 @@ function createBackend(
     },
     async ingest(_input: IngestInput): Promise<IngestResult> {
       throw new Error("ingest should not be called in recall tests");
+    },
+    async runtimeState(): Promise<unknown> {
+      return runtimeStateImpl ? runtimeStateImpl() : null;
     },
   };
 }
@@ -131,6 +137,27 @@ function createSystemTransformInput(sessionID: string): SystemTransformInput {
 
 function createSystemTransformOutput(system: string[] = []): SystemTransformOutput {
   return { system };
+}
+
+function createMessagesTransformOutput(
+  sessionID: string,
+  parts: ChatMessageOutput["parts"],
+): MessagesTransformOutput {
+  return {
+    messages: [
+      {
+        info: {
+          id: "msg-runtime-state",
+          sessionID,
+          role: "user",
+          time: { created: 0 },
+          agent: "build",
+          model: { providerID: "openai", modelID: "gpt-test" },
+        } as MessagesTransformOutput["messages"][number]["info"],
+        parts: parts as MessagesTransformOutput["messages"][number]["parts"],
+      },
+    ],
+  };
 }
 
 function createSessionCompactingInput(sessionID: string): SessionCompactingInput {
@@ -601,6 +628,76 @@ test("buildHooks renders runtime quota denial action in recall context", async (
   assert.deepEqual(
     debugEvents.map((entry) => entry.event),
     ["recall.capture", "recall.request", "recall.quota_denied"],
+  );
+});
+
+test("buildHooks appends runtime-state notice to latest user message once per session", async () => {
+  let runtimeStateCalls = 0;
+  let searchCalls = 0;
+  const hooks = buildHooks(
+    createBackend(
+      async (input) => {
+        searchCalls += 1;
+        return {
+          memories: [],
+          total: 0,
+          limit: input.limit ?? 0,
+          offset: input.offset ?? 0,
+        };
+      },
+      async () => {
+        runtimeStateCalls += 1;
+        return {
+          mem9ApiKey: { status: "active" },
+          meters: [
+            {
+              meter: "memory_recall_requests",
+              budgets: [
+                {
+                  type: "includedQuota",
+                  state: "warning",
+                  usage: { used: 820, remaining: 180, percent: 82 },
+                  capacity: { type: "limited", value: 1000 },
+                },
+              ],
+            },
+          ],
+        };
+      },
+    ),
+  );
+
+  const onMessagesTransform = hooks["experimental.chat.messages.transform"];
+  assert.ok(onMessagesTransform);
+
+  const firstOutput = createMessagesTransformOutput(
+    "session-runtime-state",
+    [textPart("Find relevant project context.")],
+  );
+  await onMessagesTransform({}, firstOutput);
+
+  const secondOutput = createMessagesTransformOutput(
+    "session-runtime-state",
+    [textPart("Check again.")],
+  );
+  await onMessagesTransform({}, secondOutput);
+
+  const injectedPart = firstOutput.messages[0]?.parts.find(
+    (part) => part.type === "text" && part.text.includes("<mem9-status-warning>"),
+  );
+
+  assert.equal(runtimeStateCalls, 1);
+  assert.equal(searchCalls, 0);
+  assert.ok(injectedPart);
+  assert.match(
+    injectedPart.type === "text" ? injectedPart.text : "",
+    /mem9 recall is at 82% of its included quota/,
+  );
+  assert.equal(
+    secondOutput.messages[0]?.parts.some(
+      (part) => part.type === "text" && part.text.includes("<mem9-status-warning>"),
+    ),
+    false,
   );
 });
 
