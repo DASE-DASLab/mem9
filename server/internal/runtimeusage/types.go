@@ -62,17 +62,21 @@ const (
 )
 
 type Config struct {
-	Enabled         bool
-	ProviderID      string
-	BaseURL         string
-	InternalSecret  string
-	Timeout         time.Duration
-	MeteringTimeout time.Duration
-	ReservationTTL  time.Duration
-	OperationTTL    time.Duration
-	FailOpen        bool
-	OutboxEnabled   bool
-	Outbox          OutboxStore
+	Enabled            bool
+	ProviderID         string
+	BaseURL            string
+	InternalSecret     string
+	Timeout            time.Duration
+	MeteringTimeout    time.Duration
+	ReservationTTL     time.Duration
+	OperationTTL       time.Duration
+	FailOpen           bool
+	OutboxEnabled      bool
+	NoticeTimeout      time.Duration
+	NoticeCacheEnabled bool
+	NoticeCacheTTL     time.Duration
+	NoticeStaleTTL     time.Duration
+	Outbox             OutboxStore
 }
 
 type Subject struct {
@@ -333,6 +337,7 @@ type Manager interface {
 	Enabled() bool
 	ProviderID() string
 	RuntimeState(ctx context.Context, subject Subject) (RuntimeState, error)
+	RuntimeStateForNotice(ctx context.Context, subject Subject) (RuntimeState, error)
 	BeforeRecall(ctx context.Context, subject Subject) (*OperationLease, error)
 	AfterRecallSuccess(ctx context.Context, lease *OperationLease, result RecallResult) error
 	AfterRecallFailure(ctx context.Context, lease *OperationLease, cause error)
