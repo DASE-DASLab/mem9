@@ -10,6 +10,14 @@ STUB_CURL="${TMP_DIR}/curl"
 cat > "${STUB_CURL}" <<'SH'
 #!/usr/bin/env bash
 case "$*" in
+  *"User-Agent: ${EXPECTED_MEM9_UA}"* ) ;;
+  *)
+    printf 'missing mem9 plugin user agent: %s\n' "$*" >&2
+    exit 2
+    ;;
+esac
+
+case "$*" in
   *"/v1alpha1/mem9s"*)
     cat <<'EOF'
 {"id":"mem9_new"}
@@ -31,6 +39,8 @@ esac
 SH
 chmod +x "${STUB_CURL}"
 
+EXPECTED_MEM9_UA="mem9-plugin/claude-code/$(node -e 'const fs=require("node:fs"); const data=JSON.parse(fs.readFileSync(process.argv[1], "utf8")); process.stdout.write(data.version);' "${SCRIPT_DIR}/../.claude-plugin/plugin.json")"
+export EXPECTED_MEM9_UA
 export CLAUDE_PLUGIN_DATA="${TMP_DIR}/data"
 export MEM9_API_KEY="mem9_test"
 export MEM9_API_URL="https://api.mem9.ai"

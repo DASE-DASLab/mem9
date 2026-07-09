@@ -17,6 +17,7 @@ import {
   messageFromErrorBody,
   parseJsonOrUndefined,
 } from "./quota-error.ts";
+import { MEM9_PLUGIN_USER_AGENT } from "../shared/plugin-user-agent.ts";
 
 function normalizeTimeoutMs(value: number | undefined, fallback: number): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
@@ -72,6 +73,7 @@ export class ServerBackend implements MemoryBackend {
       "Content-Type": "application/json",
       "X-Mnemo-Agent-Id": this.agentName,
       "X-API-Key": this.apiKey,
+      "User-Agent": MEM9_PLUGIN_USER_AGENT,
     };
     const resp = await fetch(url, {
       method,

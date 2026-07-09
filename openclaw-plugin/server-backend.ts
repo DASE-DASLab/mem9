@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import type { MemoryBackend } from "./backend.js";
 import type {
   Memory,
@@ -21,6 +23,24 @@ type ProvisionMem9sResponse = {
 
 export const DEFAULT_TIMEOUT_MS = 8_000;
 export const DEFAULT_SEARCH_TIMEOUT_MS = 15_000;
+const MEM9_PLUGIN_USER_AGENT = `mem9-plugin/openclaw/${readPackageVersion()}`;
+
+function readPackageVersion(): string {
+  for (const relativePath of ["./package.json", "../package.json"]) {
+    try {
+      const pkg = JSON.parse(
+        readFileSync(new URL(relativePath, import.meta.url), "utf8"),
+      );
+      if (typeof pkg.version === "string" && pkg.version.trim()) {
+        return pkg.version.trim();
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return "unknown";
+}
 
 export interface BackendTimeouts {
   defaultTimeoutMs?: number;
@@ -72,6 +92,9 @@ export class ServerBackend implements MemoryBackend {
     const qs = query.toString();
     const resp = await fetch(this.baseUrl + "/v1alpha1/mem9s" + (qs ? `?${qs}` : ""), {
       method: "POST",
+      headers: {
+        "User-Agent": MEM9_PLUGIN_USER_AGENT,
+      },
       signal: AbortSignal.timeout(this.timeouts.defaultTimeoutMs),
     });
 
@@ -182,6 +205,7 @@ export class ServerBackend implements MemoryBackend {
       "Content-Type": "application/json",
       "X-Mnemo-Agent-Id": this.agentName,
       "X-API-Key": this.apiKey,
+      "User-Agent": MEM9_PLUGIN_USER_AGENT,
     };
     return fetch(url, {
       method,

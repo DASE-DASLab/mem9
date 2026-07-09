@@ -1,15 +1,38 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { ServerBackend } from "./server-backend.js";
 import { Mem9HttpError, parseRuntimeQuotaDenied } from "./quota-error.js";
 
+function readPackageVersion(): string {
+  for (const relativePath of ["./package.json", "../package.json"]) {
+    try {
+      const pkg = JSON.parse(
+        readFileSync(new URL(relativePath, import.meta.url), "utf8"),
+      );
+      if (typeof pkg.version === "string" && pkg.version.trim()) {
+        return pkg.version.trim();
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return "unknown";
+}
+
+const packageVersion = readPackageVersion();
+const expectedUserAgent = `mem9-plugin/openclaw/${packageVersion}`;
+
 test("register forwards only utm_* params during create-new provision", async () => {
   const originalFetch = globalThis.fetch;
   let requestedURL = "";
+  let requestHeaders: Headers | undefined;
 
   globalThis.fetch = async (input, init) => {
     requestedURL = String(input);
+    requestHeaders = new Headers(init?.headers);
     assert.equal(init?.method, "POST");
 
     return new Response(JSON.stringify({ id: "space-1" }), {
@@ -39,6 +62,7 @@ test("register forwards only utm_* params during create-new provision", async ()
     assert.equal(url.searchParams.get("utm_campaign"), "spring");
     assert.equal(url.searchParams.has("foo"), false);
     assert.equal(url.searchParams.has("utm_medium"), false);
+    assert.equal(requestHeaders?.get("User-Agent"), expectedUserAgent);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -104,6 +128,7 @@ test("runtime-state uses the public v1alpha2 path", async () => {
     assert.equal(requestedURL, "https://api.mem9.ai/v1alpha2/mem9s/runtime-state");
     assert.equal(requestHeaders?.get("X-API-Key"), "space-key");
     assert.equal(requestHeaders?.get("X-Mnemo-Agent-Id"), "agent-1");
+    assert.equal(requestHeaders?.get("User-Agent"), expectedUserAgent);
   } finally {
     globalThis.fetch = originalFetch;
   }
