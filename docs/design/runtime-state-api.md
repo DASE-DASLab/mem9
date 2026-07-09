@@ -50,12 +50,16 @@ X-API-Key: <public mem9 API key subject>
 
 The response is mapped into the public runtime-state core. mem9-server keeps
 `mem9ApiKey.status` from local key/status resolution, fills missing provider
-defaults only where required for a stable public shape, and returns configured
-`providerId` with object-shaped `providerData`.
+defaults only where required for a stable public shape, returns the configured
+`providerId`, and preserves upstream object-shaped `providerData`.
 
 `MNEMO_RUNTIME_USAGE_PROVIDER_ID` controls the public provider discriminator.
-When runtime usage is enabled and the env var is omitted, mem9-server uses
-`mem9-official`.
+When the env var is omitted, mem9-server uses an empty provider id. Upstream
+`providerData` and `recommendedAction` remain part of the explicit runtime-state
+response contract. Mem9 official hosted deployments set `mem9-official`;
+self-hosted deployments usually leave this empty or use their own provider id.
+Plugins and API consumers should interpret provider-specific `providerData`
+fields only for provider ids they recognize, such as `mem9-official`.
 
 ## Success Response Notices
 
@@ -204,7 +208,7 @@ response and uses this fallback.
 - Provider-unavailable fallback: hosted response shape used when state lookup
   fails.
 - Provider ID: public discriminator for interpreting provider-specific
-  `providerData`.
+  `providerData` fields when recognized by the consumer.
 - Success response notice: optional top-level `message` and `runtimeState`
   data attached to successful recall and ingest responses.
 - Displayable warning or action: a runtime state condition that should reach the

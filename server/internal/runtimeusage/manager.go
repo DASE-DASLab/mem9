@@ -124,14 +124,8 @@ func (m *manager) runtimeStateProvider(ctx context.Context, subject Subject) (Ru
 		return RuntimeState{}, &UnavailableError{Err: err}
 	}
 	state.SetProviderDefaults()
-	if len(state.ProviderData) > 0 {
-		providerID := m.ProviderID()
-		if providerID == "" {
-			state.ProviderData = nil
-		} else {
-			state.ProviderID = providerID
-		}
-	}
+	providerID := m.ProviderID()
+	state.ProviderID = providerID
 	return state, nil
 }
 
