@@ -410,6 +410,84 @@ func TestExtractPhase1WithoutRoutingOmitsRoutingPrompt(t *testing.T) {
 	}
 }
 
+func TestExtractionPromptsRequireDurableFactsOnly(t *testing.T) {
+	tests := []struct {
+		name     string
+		response string
+		invoke   func(*IngestService) error
+	}{
+		{
+			name:     "facts only",
+			response: `{"facts": [{"text": "Uses Go 1.22", "tags": ["tech"]}]}`,
+			invoke: func(svc *IngestService) error {
+				_, err := svc.ExtractContentWithRouting(context.Background(), "I use Go 1.22", nil)
+				return err
+			},
+		},
+		{
+			name:     "facts and message tags",
+			response: `{"facts": [{"text": "Uses Go 1.22", "tags": ["tech"]}], "message_tags": [["tech"]]}`,
+			invoke: func(svc *IngestService) error {
+				_, err := svc.ExtractPhase1(context.Background(), []IngestMessage{{Role: "user", Content: "I use Go 1.22"}})
+				return err
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var systemPrompt string
+			mockLLM := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var req struct {
+					Messages []struct {
+						Content string `json:"content"`
+					} `json:"messages"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					t.Fatalf("decode llm request: %v", err)
+				}
+				if len(req.Messages) > 0 {
+					systemPrompt = req.Messages[0].Content
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]any{
+					"choices": []map[string]any{
+						{"message": map[string]string{"content": tc.response}},
+					},
+				})
+			}))
+			defer mockLLM.Close()
+
+			llmClient := llm.New(llm.Config{APIKey: "test-key", BaseURL: mockLLM.URL, Model: "test-model"})
+			svc := NewIngestService(&memoryRepoMock{}, llmClient, nil, "auto-model", ModeSmart)
+			if err := tc.invoke(svc); err != nil {
+				t.Fatalf("extract: %v", err)
+			}
+
+			for _, want := range []string{
+				"omit it from the facts array entirely",
+				"never emit them as facts",
+				`The "facts" array must contain durable facts only`,
+			} {
+				if !strings.Contains(systemPrompt, want) {
+					t.Fatalf("durable-only extraction prompt missing %q in:\n%s", want, systemPrompt)
+				}
+			}
+			for _, unwanted := range []string{
+				`"fact_type": "query_intent"`,
+				`"fact_type": "transient_status"`,
+				`"fact_type": "ephemeral_intent"`,
+				`"fact_type": "activity_log"`,
+				`"fact_type": "operational_log"`,
+			} {
+				if strings.Contains(systemPrompt, unwanted) {
+					t.Fatalf("durable-only extraction prompt still emits %q in:\n%s", unwanted, systemPrompt)
+				}
+			}
+		})
+	}
+}
+
 func TestExtractPhase1WithRoutingIncludesPromptAndParsesTargets(t *testing.T) {
 	var systemPrompt string
 	mockLLM := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -885,6 +963,387 @@ func TestExtractFactsAndTagsRetryRecoveryDropsFlattenedQueryIntent(t *testing.T)
 	}
 	if len(messageTags[1]) != 1 || messageTags[1][0] != "answer" {
 		t.Fatalf("expected message_tags[1] = [answer], got %v", messageTags[1])
+	}
+}
+
+func TestFilterLongTermFactsDropsTransientAndKeepsStableFacts(t *testing.T) {
+	t.Parallel()
+
+	input := []ExtractedFact{
+		{Text: "User wants to restart a task and restore it to normal working condition"},
+		{Text: "Is working out now"},
+		{Text: "Considering consuming protein powder tonight (2026-06-14)."},
+		{Text: "Recorded weight is 79.7kg"},
+		{Text: "Temporary workspace is /home/ec2-user/clawd-workspace/"},
+		{Text: "Ate a plate of Xijia De mushroom and pork dumplings for lunch"},
+		{Text: "User had Starbucks for breakfast"},
+		{Text: "Usually sleeps more than 7 hours"},
+		{Text: "Default protein serving is 24g"},
+		{Text: "Uses Feishu for calendar scheduling"},
+		{Text: "Plans to shift focus from weight reduction to muscle gain, with fat loss as a secondary objective."},
+		{Text: "Melanie went camping in the mountains last week"},
+		{Text: "James plans to call Samantha next month"},
+		{Text: "Alice had dinner with Bob yesterday"},
+		{Text: "Alice is working out now"},
+		{Text: "User wants to create a startup"},
+		{Text: "User wants to set up a nonprofit"},
+		{Text: "Debugging a memory leak in a Go service"},
+	}
+
+	got := filterLongTermFacts(input)
+	var texts []string
+	for _, fact := range got {
+		texts = append(texts, fact.Text)
+	}
+
+	want := []string{
+		"Usually sleeps more than 7 hours",
+		"Default protein serving is 24g",
+		"Uses Feishu for calendar scheduling",
+		"Plans to shift focus from weight reduction to muscle gain, with fat loss as a secondary objective.",
+		"Melanie went camping in the mountains last week",
+		"James plans to call Samantha next month",
+		"Alice had dinner with Bob yesterday",
+		"Alice is working out now",
+		"User wants to create a startup",
+		"User wants to set up a nonprofit",
+		"Debugging a memory leak in a Go service",
+	}
+	if !reflect.DeepEqual(texts, want) {
+		t.Fatalf("filtered texts = %#v, want %#v", texts, want)
+	}
+}
+
+func TestServerGuardDropsOnlyNarrowOperationalIntentAndLogs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		text string
+		want string
+	}{
+		{
+			name: "restart task",
+			text: "User wants to restart a task and restore it to normal working condition",
+			want: factTypeEphemeralIntent,
+		},
+		{
+			name: "restart task with stable configuration wording",
+			text: "User wants to restart a task using the default configuration",
+			want: factTypeEphemeralIntent,
+		},
+		{
+			name: "record weight for durable goal",
+			text: "User wants to record a weight for the long-term goal",
+			want: factTypeEphemeralIntent,
+		},
+		{
+			name: "short lived supplement intent mentioning goal",
+			text: "Considering consuming protein powder tonight for the goal",
+			want: factTypeEphemeralIntent,
+		},
+		{
+			name: "third person progressive supplement intent",
+			text: "The user is considering consuming protein powder tonight",
+			want: factTypeEphemeralIntent,
+		},
+		{
+			name: "supplement intent with non-social companion phrase",
+			text: "The user is considering consuming protein powder tonight with water",
+			want: factTypeEphemeralIntent,
+		},
+		{
+			name: "specific having supplement intent",
+			text: "The user is considering having protein powder tonight",
+			want: factTypeEphemeralIntent,
+		},
+		{
+			name: "durable future social plan",
+			text: "User plans to have dinner with Alice tomorrow",
+			want: "",
+		},
+		{
+			name: "durable future family plan",
+			text: "User will eat lunch with family tomorrow",
+			want: "",
+		},
+		{
+			name: "durable visa interview commitment",
+			text: "User will have a visa interview tomorrow",
+			want: "",
+		},
+		{
+			name: "durable surgery commitment",
+			text: "User plans to have surgery tomorrow",
+			want: "",
+		},
+		{
+			name: "durable employee training plan",
+			text: "User plans to train a new employee tomorrow",
+			want: "",
+		},
+		{
+			name: "durable active employee training",
+			text: "User is training a new employee tomorrow",
+			want: "",
+		},
+		{
+			name: "durable future workout commitment",
+			text: "User is working out tomorrow",
+			want: "",
+		},
+		{
+			name: "debug log",
+			text: "The debug log reported a transient import task error",
+			want: factTypeOperationalLog,
+		},
+		{
+			name: "completed import task log",
+			text: "Import task completed successfully",
+			want: factTypeOperationalLog,
+		},
+		{
+			name: "durable cron configuration",
+			text: "Cron job is configured to run daily",
+			want: "",
+		},
+		{
+			name: "durable visa deadline",
+			text: "User's visa application is due tomorrow",
+			want: "",
+		},
+		{
+			name: "durable project deadline",
+			text: "Project proposal is due tomorrow",
+			want: "",
+		},
+		{
+			name: "assistant eta log",
+			text: "Assistant ETA is tomorrow",
+			want: factTypeOperationalLog,
+		},
+		{
+			name: "durable visa confirmation deadline",
+			text: "Visa application requires confirmation today",
+			want: "",
+		},
+		{
+			name: "durable project confirmation deadline",
+			text: "Project proposal requires confirmation today",
+			want: "",
+		},
+		{
+			name: "system confirmation log",
+			text: "System requires confirmation today",
+			want: factTypeOperationalLog,
+		},
+		{
+			name: "durable smoke test implementation",
+			text: "mnemos API smoke test round-2 uses a poll loop to wait for async memory creation",
+			want: "",
+		},
+		{
+			name: "durable social meal event",
+			text: "Had dinner with Alice yesterday",
+			want: "",
+		},
+		{
+			name: "durable possessive relationship meal event",
+			text: "User had dinner with his wife yesterday",
+			want: "",
+		},
+		{
+			name: "durable lowercase name meal event",
+			text: "User had dinner with alice yesterday",
+			want: "",
+		},
+		{
+			name: "explicit weight log with instrument",
+			text: "User recorded weight with a Withings scale",
+			want: factTypeActivityLog,
+		},
+		{
+			name: "explicit sleep log with instrument",
+			text: "User logged sleep with Apple Watch",
+			want: factTypeActivityLog,
+		},
+		{
+			name: "explicit quantified weight log",
+			text: "User weighed 79.7kg",
+			want: factTypeActivityLog,
+		},
+		{
+			name: "durable recorded album",
+			text: "User recorded their first album in 2020",
+			want: "",
+		},
+		{
+			name: "durable logged production incident",
+			text: "User logged the production incident for the postmortem",
+			want: "",
+		},
+		{
+			name: "durable completed sleep study",
+			text: "Completed a sleep study in 2024",
+			want: "",
+		},
+		{
+			name: "durable travel sleep event",
+			text: "User slept in Tokyo yesterday",
+			want: "",
+		},
+		{
+			name: "subjectless sleep duration log",
+			text: "Slept 5 hours last night",
+			want: factTypeActivityLog,
+		},
+		{
+			name: "subjectless sleep quality log",
+			text: "Slept poorly last night",
+			want: factTypeActivityLog,
+		},
+		{
+			name: "durable subjectless travel sleep event",
+			text: "Slept at a Tokyo hotel yesterday",
+			want: "",
+		},
+		{
+			name: "durable historical health event",
+			text: "Lost 20kg after cancer treatment in 2015",
+			want: "",
+		},
+		{
+			name: "durable birth measurement",
+			text: "User's birth weight is 3kg",
+			want: "",
+		},
+		{
+			name: "durable startup goal",
+			text: "User wants to create a startup",
+			want: "",
+		},
+		{
+			name: "durable nonprofit goal",
+			text: "User wants to set up a nonprofit",
+			want: "",
+		},
+		{
+			name: "durable debugging work",
+			text: "Debugging a memory leak in a Go service",
+			want: "",
+		},
+		{
+			name: "durable completed education",
+			text: "Completed a PhD in 2015",
+			want: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := serverGuardDropReason(tc.text); got != tc.want {
+				t.Fatalf("serverGuardDropReason(%q) = %q, want %q", tc.text, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestServerGuardHandlesChineseNonLongTermContent(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		text string
+		want string
+	}{
+		{name: "restart task", text: "用户想重启任务", want: factTypeEphemeralIntent},
+		{name: "consume supplement tonight", text: "用户考虑今晚喝蛋白粉", want: factTypeEphemeralIntent},
+		{name: "current workout", text: "用户正在健身", want: factTypeTransientStatus},
+		{name: "recorded weight", text: "用户记录了体重79.7kg", want: factTypeActivityLog},
+		{name: "temporary workspace", text: "临时工作区是 /tmp/mem9", want: factTypeOperationalLog},
+		{name: "completed import task", text: "导入任务已完成", want: factTypeOperationalLog},
+		{name: "durable company plan", text: "用户计划明年创办一家公司", want: ""},
+		{name: "durable employee training", text: "用户正在训练新员工", want: ""},
+		{name: "durable import configuration", text: "导入任务使用批处理架构", want: ""},
+		{name: "durable social event", text: "昨天和 Alice 一起吃了晚饭", want: ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := serverGuardDropReason(tc.text); got != tc.want {
+				t.Fatalf("serverGuardDropReason(%q) = %q, want %q", tc.text, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFilterLongTermFactsDropsNonLongTermFactTypes(t *testing.T) {
+	t.Parallel()
+
+	input := []ExtractedFact{
+		{Text: "keep stable preference", FactType: "fact"},
+		{Text: "query", FactType: factTypeQueryIntent},
+		{Text: "now", FactType: factTypeTransientStatus},
+		{Text: "intent", FactType: factTypeEphemeralIntent},
+		{Text: "activity", FactType: factTypeActivityLog},
+		{Text: "ops", FactType: factTypeOperationalLog},
+	}
+
+	got := filterLongTermFacts(input)
+	if len(got) != 1 || got[0].Text != "keep stable preference" {
+		t.Fatalf("filtered facts = %+v, want only stable fact", got)
+	}
+}
+
+func TestReconcilePhase2FiltersNonLongTermFactsBeforeWrite(t *testing.T) {
+	t.Parallel()
+
+	repo := &memoryRepoMock{}
+	svc := NewIngestService(repo, nil, nil, "auto-model", ModeSmart)
+
+	res, err := svc.ReconcilePhase2(context.Background(), "agent-1", "agent-1", "", "sess-1", []ExtractedFact{
+		{Text: "Is working out now"},
+		{Text: "Temporary workspace is /home/ec2-user/clawd-workspace/"},
+	})
+	if err != nil {
+		t.Fatalf("ReconcilePhase2() error = %v", err)
+	}
+	if res == nil || res.Status != "complete" || res.MemoriesChanged != 0 {
+		t.Fatalf("result = %+v, want complete with no changes", res)
+	}
+	if len(repo.createCalls) != 0 {
+		t.Fatalf("create calls = %d, want 0", len(repo.createCalls))
+	}
+}
+
+func TestExtractPhase1FiltersFactsButPreservesMessageTags(t *testing.T) {
+	t.Parallel()
+
+	mockLLM := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{
+				{"message": map[string]string{"content": `{"facts":[{"text":"Is working out now","fact_type":"transient_status"}],"message_tags":[["fitness"],["answer"]]}`}},
+			},
+		})
+	}))
+	defer mockLLM.Close()
+
+	llmClient := llm.New(llm.Config{APIKey: "test-key", BaseURL: mockLLM.URL, Model: "test-model"})
+	svc := NewIngestService(&memoryRepoMock{}, llmClient, nil, "auto-model", ModeSmart)
+
+	result, err := svc.ExtractPhase1(context.Background(), []IngestMessage{
+		{Role: "user", Content: "Is working out now"},
+		{Role: "assistant", Content: "Got it."},
+	})
+	if err != nil {
+		t.Fatalf("ExtractPhase1() error = %v", err)
+	}
+	if len(result.Facts) != 0 {
+		t.Fatalf("facts = %+v, want none", result.Facts)
+	}
+	if len(result.MessageTags) != 2 || len(result.MessageTags[0]) != 1 || result.MessageTags[0][0] != "fitness" {
+		t.Fatalf("message tags = %+v, want preserved tags", result.MessageTags)
 	}
 }
 
