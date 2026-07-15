@@ -301,6 +301,30 @@ vi.mock("@/lib/memory-insight-background", async () => {
   };
 });
 
+vi.mock("@/components/space/memory-insight-workspace", () => ({
+  MemoryInsightWorkspace: ({
+    memories,
+    onMemorySelect,
+  }: {
+    memories: Memory[];
+    onMemorySelect: (memory: Memory) => void;
+  }) => (
+    <div data-testid="mock-memory-insight-workspace">
+      <button
+        type="button"
+        onClick={() => {
+          const memory = memories[0];
+          if (memory) {
+            onMemorySelect(memory);
+          }
+        }}
+      >
+        Open insight memory
+      </button>
+    </div>
+  ),
+}));
+
 vi.mock("@/lib/session", () => ({
   getActiveSpaceId: () => "space-1",
   getSpaceId: () => "space-1",
@@ -461,6 +485,21 @@ vi.mock("@/api/source-memories", () => ({
 }));
 
 vi.mock("@/api/analysis-queries", () => ({
+  useUserProfile: () => ({
+    data: {
+      generatedAt: "2026-03-21T12:00:00.000Z",
+      source: { memoryTypes: ["insight", "pinned"], memoryCount: mockedSourceMemories.length },
+      summary: {
+        text: "Mocked user profile summary.",
+        evidence: [],
+      },
+      attributes: [],
+      changes: [],
+      relationships: [],
+      items: [],
+    },
+    isLoading: false,
+  }),
   useSpaceAnalysis: () => ({
     state: analysisState,
     taxonomy: {
@@ -587,6 +626,55 @@ describe("SpacePage", () => {
     expect(shouldCompactMemoryOverview(selected, false, "sheet")).toBe(false);
   });
 
+  it("opens an insight memory detail sheet from the Memory Insight tab", async () => {
+    renderSpacePage();
+
+    const insightTab = screen.getByRole("tab", { name: "Memory Insight" });
+    insightTab.focus();
+    fireEvent.keyDown(insightTab, { key: "Enter" });
+
+    await waitFor(() => expect(insightTab).toHaveAttribute("data-state", "active"));
+    fireEvent.click(screen.getByRole("button", { name: "Open insight memory" }));
+
+    expect(
+      await screen.findByRole("dialog", { name: "Deploy dashboard status update" }),
+    ).toBeInTheDocument();
+  });
+
+  it("closes the list memory detail when switching to Memory Insight", async () => {
+    renderSpacePage();
+
+    const listTab = screen.getByRole("tab", { name: "Memory List" });
+    listTab.focus();
+    fireEvent.keyDown(listTab, { key: "Enter" });
+
+    await waitFor(() => expect(listTab).toHaveAttribute("data-state", "active"));
+
+    const activityCard = screen
+      .getByText("Deploy dashboard status update")
+      .closest('[role="button"]');
+
+    expect(activityCard).not.toBeNull();
+    fireEvent.click(activityCard!);
+
+    await waitFor(() => {
+      expect(
+        document.querySelector('[data-mp-event="Dashboard/Detail/DeleteClicked"]'),
+      ).not.toBeNull();
+    });
+
+    const insightTab = screen.getByRole("tab", { name: "Memory Insight" });
+    insightTab.focus();
+    fireEvent.keyDown(insightTab, { key: "Enter" });
+
+    await waitFor(() => expect(insightTab).toHaveAttribute("data-state", "active"));
+    await waitFor(() => {
+      expect(
+        document.querySelector('[data-mp-event="Dashboard/Detail/DeleteClicked"]'),
+      ).toBeNull();
+    });
+  });
+
   it("filters memories by clicked analysis category without auto-opening detail", async () => {
     renderSpacePage();
 
@@ -603,18 +691,11 @@ describe("SpacePage", () => {
     ).toBeNull();
   });
 
-  it("does not prefetch deep-analysis reports before the analysis tab is opened", async () => {
+  it("keeps deep-analysis reports idle while the analysis tab entry is hidden", async () => {
     renderSpacePage();
 
+    expect(screen.queryByRole("tab", { name: "Memory Analysis" })).not.toBeInTheDocument();
     expect(mocks.useDeepAnalysisReports).not.toHaveBeenCalled();
-
-    const analysisTab = screen.getByRole("tab", { name: "Memory Analysis" });
-    analysisTab.focus();
-    fireEvent.keyDown(analysisTab, { key: "Enter" });
-
-    await waitFor(() => {
-      expect(mocks.useDeepAnalysisReports).toHaveBeenCalledWith("space-1", true);
-    });
   });
 
   it("keeps all-range stats disabled until the export dialog is opened", async () => {
