@@ -2246,7 +2246,7 @@
       },
       "CreateImport": {
         "required": true,
-        "description": "Multipart upload for async file ingest. File size is limited to 50 MiB.",
+        "description": "Multipart upload for async file ingest. File size is limited to 50 MiB. The upload may return 202 before background processing; for file_type=memory, any memories[].metadata.external_provenance member is reserved and causes the import task to fail without writing that file.",
         "content": {
           "multipart/form-data": {
             "schema": {
@@ -2988,7 +2988,7 @@
       },
       "CreateMemoryRequest": {
         "type": "object",
-        "description": "Provide either content or messages, not both. memory_type is only accepted for content requests. mode is only accepted for messages requests.",
+        "description": "Provide either content or messages, not both. memory_type is only accepted for content requests. mode is only accepted for messages requests. The reserved metadata.external_provenance envelope is optional, creation-only, and accepted only for a messages request containing exactly one fact-eligible user message; invalid reserved envelopes are rejected before asynchronous acceptance.",
         "properties": {
           "content": {
             "type": "string",
@@ -3014,7 +3014,7 @@
             }
           },
           "metadata": {
-            "$ref": "#/components/schemas/Metadata"
+            "$ref": "#/components/schemas/CreateMemoryMetadata"
           },
           "messages": {
             "type": "array",
@@ -3128,7 +3128,7 @@
             "description": "Optional session ID associated with session imports."
           }
         },
-        "description": "Multipart upload for async file ingest. File size is limited to 50 MiB. For JSON memory/session import files, include top-level appId or per-memory appId fields to assign imported rows to an application isolation id."
+        "description": "Multipart upload for async file ingest. File size is limited to 50 MiB. For JSON memory/session import files, include top-level appId or per-memory appId fields to assign imported rows to an application isolation id. The HTTP upload may return 202 before background validation; a memory import containing memories[].metadata.external_provenance fails as a task because the reserved envelope is accepted only through validated message ingest."
       },
       "MemoryListResponse": {
         "type": "object",
@@ -3420,7 +3420,7 @@
         }
       },
       "Metadata": {
-        "description": "Raw JSON metadata. The server accepts any valid JSON value.",
+        "description": "Raw JSON metadata. The server accepts any valid JSON value. Generic update metadata cannot create, replace, or remove the creation-only external_provenance field; metadata updates to a provenance-bearing memory must therefore be objects. New fact responses may contain the exact agent9/message-source@1 envelope, while historical values are returned as stored and consumers must treat unrecognized provenance shapes as opaque.",
         "nullable": true,
         "oneOf": [
           {
@@ -3441,6 +3441,56 @@
             "type": "boolean"
           }
         ]
+      },
+      "CreateMemoryMetadata": {
+        "description": "Raw JSON metadata for memory creation. Object metadata may carry the optional reserved external_provenance envelope; all other object members remain application-defined.",
+        "nullable": true,
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "external_provenance": {
+                "$ref": "#/components/schemas/ExternalProvenance"
+              }
+            },
+            "additionalProperties": true
+          },
+          {
+            "type": "array",
+            "items": {}
+          },
+          {
+            "type": "string"
+          },
+          {
+            "type": "number"
+          },
+          {
+            "type": "boolean"
+          }
+        ]
+      },
+      "ExternalProvenance": {
+        "type": "object",
+        "description": "Reserved creation provenance. This exact envelope is accepted only on message ingest with exactly one fact-eligible user message and is copied to every newly created memory revision.",
+        "required": [
+          "schema",
+          "source_message_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "schema": {
+            "type": "string",
+            "enum": [
+              "agent9/message-source@1"
+            ]
+          },
+          "source_message_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          }
+        }
       },
       "MemoryType": {
         "type": "string",
