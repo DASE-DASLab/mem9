@@ -455,7 +455,7 @@ func (r *MemoryRepo) BulkCreate(ctx context.Context, memories []*domain.Memory) 
 
 // VectorSearch performs ANN search using cosine distance.
 // VEC_COSINE_DISTANCE must appear identically in SELECT and ORDER BY for TiDB VECTOR INDEX usage.
-func (r *MemoryRepo) VectorSearch(ctx context.Context, queryVec []float32, f domain.MemoryFilter, limit int) ([]domain.Memory, error) {
+func (r *MemoryRepo) VectorSearch(ctx context.Context, queryVec []float32, f domain.MemoryFilter, limit int) (_ []domain.Memory, resultErr error) {
 	vecStr := vecToString(queryVec)
 	if vecStr == nil {
 		return nil, nil
@@ -481,10 +481,11 @@ func (r *MemoryRepo) VectorSearch(ctx context.Context, queryVec []float32, f dom
 	start := time.Now()
 	rows, err := r.db.QueryContext(ctx, query, fullArgs...)
 	if err != nil {
-		slog.ErrorContext(ctx, "vector search failed", "cluster_id", r.clusterID, "duration_ms", time.Since(start).Milliseconds(), "err", err)
+		logSearchError(ctx, "vector search failed", "memory", "vector", r.clusterID, time.Since(start), err)
 		return nil, fmt.Errorf("vector search: %w", err)
 	}
 	defer rows.Close()
+	defer logSearchResultError(ctx, "vector search failed", "memory", "vector", r.clusterID, start, &resultErr)
 
 	var memories []domain.Memory
 	for rows.Next() {
@@ -501,7 +502,7 @@ func (r *MemoryRepo) VectorSearch(ctx context.Context, queryVec []float32, f dom
 	return memories, nil
 }
 
-func (r *MemoryRepo) AutoVectorSearch(ctx context.Context, queryText string, f domain.MemoryFilter, limit int) ([]domain.Memory, error) {
+func (r *MemoryRepo) AutoVectorSearch(ctx context.Context, queryText string, f domain.MemoryFilter, limit int) (_ []domain.Memory, resultErr error) {
 	conds, args := r.buildFilterConds(f)
 	conds = append(conds, "embedding IS NOT NULL")
 
@@ -521,10 +522,11 @@ func (r *MemoryRepo) AutoVectorSearch(ctx context.Context, queryText string, f d
 	start := time.Now()
 	rows, err := r.db.QueryContext(ctx, query, fullArgs...)
 	if err != nil {
-		slog.ErrorContext(ctx, "auto vector search failed", "cluster_id", r.clusterID, "duration_ms", time.Since(start).Milliseconds(), "err", err)
+		logSearchError(ctx, "auto vector search failed", "memory", "auto_vector", r.clusterID, time.Since(start), err)
 		return nil, fmt.Errorf("auto vector search: cluster_id=%s: %w", r.clusterID, err)
 	}
 	defer rows.Close()
+	defer logSearchResultError(ctx, "auto vector search failed", "memory", "auto_vector", r.clusterID, start, &resultErr)
 
 	var memories []domain.Memory
 	for rows.Next() {
@@ -542,7 +544,7 @@ func (r *MemoryRepo) AutoVectorSearch(ctx context.Context, queryText string, f d
 }
 
 // KeywordSearch performs substring search on content.
-func (r *MemoryRepo) KeywordSearch(ctx context.Context, query string, f domain.MemoryFilter, limit int) ([]domain.Memory, error) {
+func (r *MemoryRepo) KeywordSearch(ctx context.Context, query string, f domain.MemoryFilter, limit int) (_ []domain.Memory, resultErr error) {
 	conds, args := r.buildFilterConds(f)
 	if query != "" {
 		conds = append(conds, "content LIKE CONCAT('%', ?, '%')")
@@ -556,10 +558,11 @@ func (r *MemoryRepo) KeywordSearch(ctx context.Context, query string, f domain.M
 	start := time.Now()
 	rows, err := r.db.QueryContext(ctx, sqlQuery, args...)
 	if err != nil {
-		slog.ErrorContext(ctx, "keyword search failed", "cluster_id", r.clusterID, "duration_ms", time.Since(start).Milliseconds(), "err", err)
+		logSearchError(ctx, "keyword search failed", "memory", "keyword", r.clusterID, time.Since(start), err)
 		return nil, fmt.Errorf("keyword search: %w", err)
 	}
 	defer rows.Close()
+	defer logSearchResultError(ctx, "keyword search failed", "memory", "keyword", r.clusterID, start, &resultErr)
 
 	var memories []domain.Memory
 	for rows.Next() {
@@ -597,7 +600,7 @@ func (r *MemoryRepo) FTSSearch(ctx context.Context, query string, f domain.Memor
 	start := time.Now()
 	memories, err := r.ftsSearchWithPostFilter(ctx, query, f, limit)
 	if err != nil {
-		slog.ErrorContext(ctx, "fts search failed", "cluster_id", r.clusterID, "duration_ms", time.Since(start).Milliseconds(), "err", err)
+		logSearchError(ctx, "fts search failed", "memory", "fts", r.clusterID, time.Since(start), err)
 		return nil, fmt.Errorf("fts search: cluster_id=%s: %w", r.clusterID, err)
 	}
 	slog.DebugContext(ctx, "fts search done", "cluster_id", r.clusterID, "duration_ms", time.Since(start).Milliseconds(), "count", len(memories))
